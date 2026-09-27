@@ -2,6 +2,9 @@
 
 ## 2026-09-28
 
+- Recover unexecuted menu navigation choices without discarding earlier accepted data.
+- Add bounded owned-weapon inspection, recycle/combine result checks, family context, and weapon-to-wave navigation.
+- Preserve inventory source frames and transport receipts through the learning manifest; tier upgrades remain unverified.
 - Added causal visual CNN/GRU decisions and source-resolution object crop learning.
 - Connected per-frame combat observations, immediate risk arbitration, and multi-wave purchase value regression.
 - Added observed UI transition graphs, difficulty wrap hints, and direction-only shortest-path navigation.

@@ -55,6 +55,9 @@ class LayaBroker:
     def abandon(self, *args, **kwargs):
         return self._call('abandon', *args, **kwargs)
 
+    def discard(self, *args, **kwargs):
+        return self._call('discard', *args, **kwargs)
+
     def apply_preferences(self, path):
         return self._call('configure_preferences', preferences=load_preferences(path))
 

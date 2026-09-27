@@ -461,6 +461,20 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 if observation_status_callback is not None:
                     observation_status_callback('combat' if resume_scene == 'combat' else 'menu')
             neural_directive = None
+            inventory = getattr(neural_menu, 'inventory', None)
+            if inventory is not None and scene != 'shop' and inventory.before is not None:
+                inventory.interrupt()
+            if inventory is not None and scene == 'shop' and waiting is None:
+                key = inventory.step(shot, ocr, pixels)
+                if key is not None:
+                    if key != 'wait':
+                        check()
+                        if time.perf_counter_ns()-shot['capture_started_at_ns']>750_000_000:
+                            continue
+                        send_started=time.perf_counter_ns()
+                        controller.tap_menu(key)
+                        inventory.sent(send_started,time.perf_counter_ns())
+                    continue
             # A partial recovery is never training/evaluation score data. It
             # may finish an unsupported loot screen using the existing rule;
             # a normal learned run still fails closed instead of inventing a
@@ -722,6 +736,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             if navigation_visits[signature] > 3:
                 raise OSError('Repeated menu navigation without progress')
             send_started_at_ns = time.perf_counter_ns()
+            if neural_action and key == 'enter':
+                neural_menu.mark_enter_attempt()
             controller.tap_menu(key)
             sent_at_ns = time.perf_counter_ns()
             navigation_memory.sent(scene, selection.selected_id, key, shot, sent_at_ns)

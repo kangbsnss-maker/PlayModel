@@ -53,6 +53,7 @@ class _Pending:
     authorized_observed_at_ns: int | None = None
     authorized_at_ns: int | None = None
     navigation_observations: int = 0
+    confirmation_attempted: bool = False
     result_observations: int = 0
     last_result_reason: str | None = None
     last_application_check: MacroApplication | None = None
@@ -127,6 +128,7 @@ class NeuralMenuController:
                 "authorized_observed_at_ns": pending.authorized_observed_at_ns,
                 "authorized_at_ns": pending.authorized_at_ns,
                 "sent_at_ns": pending.sent_at_ns, "actual_target": pending.actual_target,
+                "confirmation_attempted": pending.confirmation_attempted,
                 "result_observations": pending.result_observations,
                 "last_result_reason": pending.last_result_reason,
                 "last_application_check": (asdict(pending.last_application_check)
@@ -264,6 +266,12 @@ class NeuralMenuController:
                              generator=self.generator, now_ns=prepared_at,
                              build_state=self.recorder.build_state)
 
+    def _navigation_exhausted(self, current):
+        self._fail('Sampled menu target did not become executable')
+
+    def _can_sample(self, current):
+        return True
+
     def _save_decision(self, stage, decision, application=None):
         if self.output_directory is not None:
             save_macro_record(self.output_directory / decision.decision_id / stage, decision, application)
@@ -344,6 +352,8 @@ class NeuralMenuController:
             return self._defer_stale_observation(stage='handle_preparation', source=source)
         self._stale_observations = 0
         if self._pending is None:
+            if not self._can_sample(current):
+                return self._wait('all_current_candidates_excluded_reobserve_without_input')
             try:
                 decision = self._sample(current, previous_action, prepared_at)
             except (ValueError, RuntimeError) as error:
@@ -358,7 +368,7 @@ class NeuralMenuController:
         else:
             self._pending.navigation_observations += 1
             if self._pending.navigation_observations > self.max_navigation_observations:
-                self._fail("Sampled menu target did not become executable")
+                return self._navigation_exhausted(current)
             if not self._candidate_same(current):
                 return self._wait("sampled_candidate_identity_or_legality_unconfirmed")
         pending = self._pending
@@ -428,6 +438,12 @@ class NeuralMenuController:
         self._authorization_expirations = 0
         return True
 
+    def mark_enter_attempt(self):
+        """Persist ambiguity before native input, even if dispatch later fails."""
+        if self._pending is None or self._pending.authorized_at_ns is None:
+            self._fail('Enter attempt without authorization')
+        self._pending.confirmation_attempted = True
+
     def mark_sent(self, *, sent_at_ns: int, actual_target: str,
                   send_started_at_ns: int | None = None) -> None:
         """Record successful transport before validation; application is separate.
@@ -445,6 +461,7 @@ class NeuralMenuController:
         if pending is None:
             failures.append("no_pending_decision")
         else:
+            pending.confirmation_attempted = True
             if pending.sent_at_ns is not None:
                 failures.append("duplicate_transmission")
             if actual_target != pending.decision.target:

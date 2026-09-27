@@ -79,7 +79,10 @@ class Learner:
             if any(key.startswith('visual_context.') for key in bundle['head']):
                 if bundle.get('graph_hash') != self.graph_hash:
                     from .graph_migration import validate_object_branch_migration, validate_character_provenance_migration
-                    if bundle.get('graph_hash') == 'ce5add78e12e558691a18b2ca7d4700dd46cdf87125612201ab526cafe908e80':
+                    if bundle.get('graph_hash') == '74493dcde730a7b213b87a4ca0fca287dc5c0b25b611f6a6da9f243b55ff5883':
+                        from .graph_migration import validate_inventory_provenance_migration
+                        migration = validate_inventory_provenance_migration(bundle, self.graph_sources)
+                    elif bundle.get('graph_hash') == 'ce5add78e12e558691a18b2ca7d4700dd46cdf87125612201ab526cafe908e80':
                         migration = validate_character_provenance_migration(bundle, self.graph_sources)
                     else:
                         migration = validate_object_branch_migration(bundle)
@@ -428,6 +431,8 @@ class Learner:
                     proofs.append({'path': receipt['ownership_receipt_path'],
                                    'sha256': receipt['ownership_receipt_sha256']})
             observation = record['evidence']
+            from playmodel.games.brotato.owned_weapons import validate_inventory_sources
+            proofs.extend(validate_inventory_sources(observation, application))
             character = observation.get('character_context')
             if character:
                 from playmodel.games.brotato.character_context import validate_choice_character

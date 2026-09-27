@@ -31,11 +31,37 @@ class LayaMenuController(NeuralMenuController):
         super().__init__(recorder, **kwargs)
         self.client = client
         self.economy = None
+        self._unreachable_scope = None
+        self._unreachable_actions = set()
+        from .owned_weapons import OwnedWeaponLearning
+        self.inventory = OwnedWeaponLearning(self)
+
+    def _navigation_exhausted(self, current):
+        pending = self._pending
+        if (pending is None or pending.confirmation_attempted
+                or pending.sent_at_ns is not None or pending.actual_target is not None):
+            return super()._navigation_exhausted(current)
+        decision = pending.decision
+        scope = (decision.observation.scene, decision.observation.wave)
+        if self._unreachable_scope != scope:
+            self._unreachable_actions.clear()
+        self._unreachable_scope = scope
+        self._unreachable_actions.add(decision.backend_record['action_id'])
+        self._save_decision('cancelled-before-confirmation', decision,
+            {'reason':'navigation_budget_exhausted_before_enter', 'sent_at_ns':None,
+             'training_eligible':False, 'resample_after_fresh_observation':True,
+             'blocked_actions':sorted(self._unreachable_actions)})
+        self.client.discard(decision.decision_id, 'navigation_budget_exhausted_before_enter')
+        self._clear_observation_cache()
+        return self._wait('unexecuted_choice_cancelled_reobserve_and_resample')
 
     def _sample(self, current, previous_action, prepared_at):
+        if self._unreachable_scope != (current.scene, current.wave):
+            self._unreachable_scope = (current.scene, current.wave)
+            self._unreachable_actions.clear()
         options = {}
         for candidate in current.candidates:
-            if not candidate.legal:
+            if not candidate.legal or candidate.candidate_id in self._unreachable_actions:
                 continue
             text = candidate.kind + ': ' + '; '.join(candidate.raw_text)
             if current.scene == 'shop' and self._ready_shop is not None:
@@ -65,6 +91,25 @@ class LayaMenuController(NeuralMenuController):
             # Full raw traits and source remain in evidence, beyond token budget.
             state.pop('unknown')
             state.pop('previous_actual_movement')
+        if self.inventory.memory:
+            state['recycled_this_run'] = self.inventory.recycled
+            evidence_sets = self.inventory.memory
+            if evidence_sets.get('still_owned'):
+                # Displayed family/threshold enters policy state; full raw text
+                # and source remain in evidence. No set completion invented.
+                threshold=next((s for s in evidence_sets.get('set_effects_raw',[])
+                                if s.startswith('(2)')), 'unknown')
+                state['owned_set_hint']='|'.join((evidence_sets['weapon'],
+                    evidence_sets.get('category','unknown'),threshold))
+                state.pop('weapon_names',None)
+                if self._ready_shop is not None:
+                    from .owned_weapons import compact
+                    matches=[offer.slot for offer in self._ready_shop.current.offers
+                        if offer.kind=='weapon' and compact(offer.name)==compact(evidence_sets['weapon'])]
+                    if matches:state['matching_displayed_weapon_offers']=matches
+                evidence_sets['merge_rule_source']='user: matching weapon and grade; actual tier change requires observation'
+        else:
+            evidence_sets = None
         if self.economy is not None:
             state['combat_memory'] = {key: self.economy.summary[key] for key in (
                 'tracked', 'hp_drop_proxy', 'target_hp_drop_proxy', 'visible_duration_proxy',
@@ -78,6 +123,9 @@ class LayaMenuController(NeuralMenuController):
                     'candidates': [asdict(candidate) for candidate in current.candidates]}
         if character:
             evidence['character_context'] = character
+        evidence['excluded_unexecuted_actions'] = sorted(self._unreachable_actions)
+        if evidence_sets:
+            evidence['owned_weapon_knowledge'] = evidence_sets
         if self.economy is not None:
             evidence['economic_model'] = self.economy.model_evidence()
         result = self.client.choose(state, options, evidence)
@@ -103,8 +151,14 @@ class LayaMenuController(NeuralMenuController):
         value = {'schema': 'playmodel.laya-menu.v1', 'backend': decision.backend_record,
                  'frame_ref': decision.observation.frame_id, 'target': decision.target,
                  'action_index': decision.action_index, 'cnn_ppo_eligible': False,
-                 'application': asdict(application) if application is not None else None}
+                 'application': (application if isinstance(application,dict) else
+                                 asdict(application) if application is not None else None)}
         (directory / 'decision.json').write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+
+    def _can_sample(self, current):
+        if self._unreachable_scope != (current.scene, current.wave):
+            return True
+        return any(c.legal and c.candidate_id not in self._unreachable_actions for c in current.candidates)
 
     def _record_application(self, decision, application):
         pending = self._pending
@@ -118,6 +172,9 @@ class LayaMenuController(NeuralMenuController):
         if pending is None or pending.sent_at_ns != application.sent_at_ns or not application.accepted:
             raise ValueError('Laya application lacks actual transport')
         self.client.accept(decision.decision_id, proof)
+        chosen=decision.observation.candidates[decision.action_index]
+        if chosen.kind=='weapon' and self.inventory.memory:
+            self.inventory.memory['still_owned']=False
         if self.economy is not None and decision.observation.scene == 'shop':
             path = self.client.output / f'choice-{decision.decision_id}.json'
             record = json.loads(path.read_text(encoding='utf8'))
@@ -127,8 +184,12 @@ class LayaMenuController(NeuralMenuController):
     def discard_interrupted_outcome(self):
         """A released combat gap cannot reward earlier menu choices."""
         self.client.abandon('released_combat_gap_outcome_excluded')
+        self.inventory.interrupt(abandoned=True)
         if self.economy is not None:
             self.economy.abandon()
+        self._clear_observation_cache()
+
+    def _clear_observation_cache(self):
         self._pending = None
         self._previous_shop = self._ready_shop = None
         self._previous_loot = self._previous_stats = None
@@ -139,4 +200,5 @@ class LayaMenuController(NeuralMenuController):
         if self.economy is not None:
             self.economy.abandon()
         self.client.abandon('menu_verification_failed:' + str(reason))
+        self.inventory.interrupt(abandoned=True)
         return super()._fail(reason, details=details)

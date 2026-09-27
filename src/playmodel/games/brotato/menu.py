@@ -27,7 +27,8 @@ BUTTONS: dict[str, dict[str, Rect]] = {
     "pause": {name: (50, top, 650, top + 65) for name, top in
               zip(("continue", "restart", "end_run", "catalog", "settings", "main_menu"),
                   (244, 334, 424, 514, 604, 694))},
-    "shop": {"buy_0": (122, 541, 278, 609), "buy_1": (486, 541, 638, 609),
+    "shop": {**{f'owned_{i}':(1131+106*i,845,1227+106*i,941) for i in range(3)},
+             "buy_0": (122, 541, 278, 609), "buy_1": (486, 541, 638, 609),
              "buy_2": (845, 541, 1000, 609), "buy_3": (1208, 541, 1360, 609),
              "lock_0": (49, 634, 352, 686), "lock_1": (410, 634, 713, 686),
              "lock_2": (771, 634, 1074, 686), "lock_3": (1132, 634, 1435, 686),
@@ -187,6 +188,10 @@ def navigation_key(current_rect: Rect, target_rect: Rect, *, scene: str | None =
     """
     _rect(current_rect)
     _rect(target_rect)
+    if (scene=='shop' and current_rect in (BUTTONS['shop'][f'owned_{i}'] for i in range(3))
+            and target_rect[0]>=1480 and target_rect[1]>=820):
+        # Human-reported route. Observe every transition; no blind multi-key send.
+        return 'right'
     if (scene == "level_up" and current_rect == BUTTONS["level_up"]["reroll_focus"]
             and target_rect in (BUTTONS["level_up"][f"choose_{index}"] for index in range(4))):
         # First move geometrically toward the card ROW above the observed

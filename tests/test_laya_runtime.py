@@ -24,6 +24,7 @@ class FakeClient:
     def __init__(self, owner):
         self.owner = owner
         self.choices, self.accepted, self.abandoned = [], [], []
+        self.discarded = []
         self.latency = 0
         self.illegal = False
 
@@ -41,6 +42,9 @@ class FakeClient:
 
     def abandon(self, reason):
         self.abandoned.append(reason)
+
+    def discard(self, decision_id, reason):
+        self.discarded.append((decision_id, reason))
 
 
 class LayaRuntimeTests(unittest.TestCase):
@@ -116,6 +120,35 @@ class LayaRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(NeuralMenuError, 'unavailable action'):
             self.propose_loot()
         self.assertEqual(self.client.accepted, [])
+
+    def test_unexecuted_navigation_exhaustion_resamples_and_excludes_failed_action(self):
+        self.controller.max_navigation_observations=1
+        self.propose_loot()
+        old=self.controller.pending_decision
+        self.controller.handle(*self.observation(3,scene='loot',loot_title='Different item'))
+        directive=self.controller.handle(*self.observation(4,scene='loot',loot_title='Different item'))
+        self.assertEqual(directive.status,'wait')
+        self.assertIsNone(self.controller.pending_decision)
+        self.assertIsNone(self.controller.failed_reason)
+        self.assertEqual(self.client.accepted,[])
+        self.assertTrue(self.client.discarded)
+        self.assertFalse(self.client.abandoned)
+        self.controller.handle(*self.observation(5,scene='loot',loot_title='Different item'))
+        self.controller.handle(*self.observation(6,scene='loot',loot_title='Different item'))
+        self.assertNotIn(old.backend_record['action_id'],self.client.choices[-1][1])
+        self.assertNotEqual(old.decision_id,self.controller.pending_decision.decision_id)
+
+    def test_transmitted_choice_cannot_be_cancelled_as_navigation_failure(self):
+        self.propose_loot()
+        self.controller._pending.sent_at_ns=self.now
+        with self.assertRaises(NeuralMenuError):
+            self.controller._navigation_exhausted(self.controller.pending_decision.observation)
+
+    def test_enter_attempt_without_receipt_cannot_be_resampled(self):
+        self.propose_loot()
+        self.controller._pending.confirmation_attempted=True
+        with self.assertRaises(NeuralMenuError):
+            self.controller._navigation_exhausted(self.controller.pending_decision.observation)
 
     def test_combat_gap_discards_laya_choices_and_pending_authorization(self):
         self.propose_loot()

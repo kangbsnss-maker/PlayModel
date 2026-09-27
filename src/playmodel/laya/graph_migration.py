@@ -16,6 +16,19 @@ def validate_character_provenance_migration(bundle, current_sources):
             'weights_preserved':True,'behavior_version_changes':True}
 
 
+def validate_inventory_provenance_migration(bundle, current_sources):
+    old=bundle.get('report',{}).get('graph_sources',{})
+    fingerprint=hashlib.sha256(canonical(old).encode()).hexdigest()
+    if (fingerprint!='74493dcde730a7b213b87a4ca0fca287dc5c0b25b611f6a6da9f243b55ff5883'
+            or bundle.get('graph_hash')!=fingerprint
+            or bundle.get('report',{}).get('graph_hash')!=fingerprint
+            or set(old)!=set(current_sources)
+            or any(old[k]!=v for k,v in current_sources.items() if k!='laya/worker.py')):
+        raise ValueError('Unsupported inventory provenance checkpoint migration')
+    return {'migration':'inventory_source_provenance_v1','old_graph_hash':fingerprint,
+            'weights_preserved':True,'behavior_version_changes':True}
+
+
 def validate_object_branch_migration(bundle):
     sources = bundle.get('report', {}).get('graph_sources', {})
     fingerprint = hashlib.sha256(canonical(sources).encode()).hexdigest()
