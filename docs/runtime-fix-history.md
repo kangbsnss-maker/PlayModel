@@ -341,3 +341,21 @@ ADR 0014: 관측 환경, 무기 출처, 능력치, 위협 궤적, 9개 목적지
 이전 세션 마지막 상태는 setup 검증 실패의 fault_paused였으며 실제 사용자 중지가 아니었다.
 이번 수정 적용 재시작은 숨김 launcher pid 280, worker-20260928T012019 로그로 추적한다.
 실게임 laya-20260927T162022Z-52015eb1: revision 14에서 회피 자료 65개, 유효 거리 회귀 39개, 저장 모델 samples 39 확인. running/error=null. 원본 JSONL SHA256 1da9834b2637b1346033db5a2105851281b4dc573b58a8f3355a731a30c7e955.
+
+### 팝업 이후 계속되는 조작 보류: 독립 watchdog 복구 누락 — 2026-09-28
+
+사용자 증상은 포커스 상실 후 조작 보류. 실제 마지막 실패는
+laya-20260927T162022Z-52015eb1 / neural-59bfb8fb729c4aedb249effe51c6f2e9의
+independent_input_watchdog였고, 이후 관측은 level_up이었다. OS 포커스 상실이
+watchdog를 유발했다는 증거는 없으며 HWND 입력은 원래 전경 포커스를 요구하지 않는다.
+165개 입력 모두 정상 전송, 작업자 종료/기록 완료, 정상 기한 내 해제가 보존되어 있었다.
+_safe_recovery_release는 controller_guard만 허용하고 모든 safety_reason을 배제해
+독립 감시기가 먼저 작동하면 동일한 입력 지연에서도 영구 관측 보류로 진입했다.
+
+정확히 reason/safety_reason이 independent_input_watchdog로 일치하고 다른 오류가
+없을 때만 기존 복구 경로에 연결했다. 모든 전송 완료가 권한 회수보다 앞서는지,
+회수 이후 dispatch 부재, 다른 권한 오류 부재, 해제 영수증/기한, 기록과 작업자 종료를
+검증한다. 기존 두 프레임·동일 대상·메뉴 전환 인계·재시도 상한·학습 간격 제외를 유지한다.
+F8/사람 조작/최소화/부분 전송/해제 실패는 복구 대상으로 넓히지 않는다.
+검사: scheduling recovery 10개, neural runtime 22개 PASS. 보존된 실제 실패 원본으로
+artifacts/verify_independent_watchdog.py 복구 증거 확인. 원본 보고서 변경 없음.

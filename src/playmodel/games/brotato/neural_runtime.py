@@ -498,16 +498,21 @@ def safe_observation_transition(report):
 
 def _safe_recovery_release(report):
     """Only completed, released scheduling guards may open a separate trial."""
-    if (report.get('reason') != 'controller_guard'
-            or report.get('controller_guard_reason') not in ('held_observation_expired', 'input_watchdog', 'sink_deadline', 'input_error:PrePostMovementDeadline')
+    independent = (report.get('reason') == 'independent_input_watchdog'
+                   and report.get('safety_reason') == 'independent_input_watchdog'
+                   and report.get('controller_guard_reason') is None and not report.get('error'))
+    guard_reason = 'independent_input_watchdog' if independent else report.get('controller_guard_reason')
+    if ((not independent and (report.get('reason') != 'controller_guard'
+            or guard_reason not in ('held_observation_expired', 'input_watchdog', 'sink_deadline', 'input_error:PrePostMovementDeadline')))
             or report.get('recorder_complete') is not True or report.get('worker_stopped') is not True
-            or report.get('cleanup_errors') or report.get('capture_error') or report.get('safety_reason')):
+            or report.get('cleanup_errors') or report.get('capture_error')
+            or (report.get('safety_reason') and not independent)):
         return None
     directory = Path(report['session_directory'])
     events = json.loads((directory / 'control-events.json').read_text(encoding='utf-8'))
     attempts = json.loads((directory / 'input-attempts.json').read_text(encoding='utf-8'))
     failure_finished = None
-    if report['controller_guard_reason'] in ('sink_deadline', 'input_error:PrePostMovementDeadline'):
+    if guard_reason in ('sink_deadline', 'input_error:PrePostMovementDeadline'):
         if not attempts or not _definitely_unsent_deadline(attempts[-1], events):
             return None
         failure_finished = attempts[-1]['transport_finished_at_ns']
@@ -517,10 +522,28 @@ def _safe_recovery_release(report):
     if any(row.get('transmitted') is not True or row.get('error') for row in successful_attempts):
         return None
     guard = next((index for index, row in enumerate(events) if row['kind'] == 'authority'
-                  and row['reason'] == report['controller_guard_reason']), None)
+                  and row['reason'] == guard_reason), None)
     if guard is None:
         return None
+    if independent:
+        # A watchdog is a scheduling stop only after all transport has completed.
+        # Never convert human/identity/transport failures into automatic recovery.
+        boundary = events[guard].get('at_ns')
+        if (type(boundary) is not int or not successful_attempts
+                or any(e['kind'] == 'authority' and e['reason'] not in
+                       ('ai_granted', guard_reason, 'closed') for e in events)
+                or any(e['kind'] == 'dispatch' for e in events[guard:])
+                or any(type(a.get('transport_finished_at_ns')) is not int
+                       or a['transport_finished_at_ns'] >= boundary
+                       or a.get('acknowledged') is False for a in successful_attempts)):
+            return None
     releases = [row for row in events[guard:] if row['kind'] == 'release']
+    if independent and any(row.get('reason') not in (guard_reason, 'closed')
+            or type(row.get('send_started_at_ns')) is not int
+            or type(row.get('send_finished_at_ns')) is not int
+            or not boundary <= row['send_started_at_ns'] <= row['send_finished_at_ns']
+            for row in releases):
+        return None
     if not releases or any(not isinstance(row.get('receipt'), dict)
             or row['receipt'].get('transmitted') is not True
             or row['receipt'].get('acknowledged') is False
@@ -534,7 +557,7 @@ def _safe_recovery_release(report):
         return None
     return {'released_at_ns': max(row['send_finished_at_ns'] for row in releases),
             'target_identity': report.get('target_identity'),
-            'previous_session': str(directory), 'guard': report['controller_guard_reason']}
+            'previous_session': str(directory), 'guard': guard_reason}
 
 
 def _definitely_unsent_deadline(attempt, events):

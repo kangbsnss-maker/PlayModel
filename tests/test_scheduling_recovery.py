@@ -56,6 +56,44 @@ class SchedulingRecoveryTests(unittest.TestCase):
         self.assertFalse(second['initial_hidden'].any())
         self.assertLess(second['config'].max_seconds, 60)
 
+    def independent_report(self, name):
+        report = self.report(name, reason='independent_input_watchdog')
+        report.update(reason='independent_input_watchdog', controller_guard_reason=None,
+                      safety_reason='independent_input_watchdog', error=None)
+        directory = Path(report['session_directory'])
+        events = json.loads((directory/'control-events.json').read_text())
+        events[0]['at_ns'] = 20
+        events[1]['send_started_at_ns'] = 21
+        attempts = [dict(transmitted=True, error=None, transport_finished_at_ns=19)]
+        self.persist_unsent(report, attempts, events)
+        return report, attempts, events
+
+    def test_independent_watchdog_enters_same_bounded_fresh_frame_recovery(self):
+        report, _, _ = self.independent_report('independent')
+        self.assertEqual(runtime._safe_recovery_release(report)['guard'], 'independent_input_watchdog')
+        terminal = dict(report, reason='terminal_death', safety_reason=None,
+                        terminal_kind='death', verified_terminal_boundary=True)
+        with patch.object(runtime, '_run_neural_trial_once', side_effect=[report, terminal]) as collect:
+            result = runtime.run_neural_trial(self.root/'game', self.root, model=self.fixture.model,
+                combat_entry=self.fixture.evidence('combat'), scheduling_recovery=True, mixed_control=True)
+        self.assertEqual(collect.call_count, 2)
+        self.assertTrue(collect.call_args_list[1].kwargs['reset_first'])
+        self.assertFalse(result['rollout_eligible'])
+
+    def test_independent_watchdog_cannot_mask_other_failures(self):
+        for case in ('human', 'partial', 'late_send', 'release_error', 'worker', 'mismatch', 'capture'):
+            with self.subTest(case=case):
+                report, attempts, events = self.independent_report(case)
+                if case == 'human': events.insert(0, dict(kind='authority', reason='human_intervention'))
+                elif case == 'partial': attempts[0]['transmitted'] = False
+                elif case == 'late_send': attempts[0]['transport_finished_at_ns'] = 21
+                elif case == 'release_error': events[1]['receipt']['transmitted'] = False
+                elif case == 'worker': report['worker_stopped'] = False
+                elif case == 'mismatch': report['safety_reason'] = 'F8'
+                elif case == 'capture': report['capture_error'] = 'lost target'
+                self.persist_unsent(report, attempts, events)
+                self.assertIsNone(runtime._safe_recovery_release(report))
+
     def test_stop_transport_and_late_release_never_restart(self):
         variants = [('late', 'held_observation_expired', True), ('transport', 'sink_deadline', False),
                     ('human', 'human_intervention', False), ('f8', 'F8', False)]
