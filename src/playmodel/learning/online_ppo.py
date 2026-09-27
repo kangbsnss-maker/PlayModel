@@ -96,6 +96,9 @@ def _load_fragment(path, *, device="cpu"):
     path, header = _header(path)
     chunks, flat, indices, manifest = load_full_run(path, device=device,
                                                  expected_runtime_contract=RUNTIME_CONTRACT)
+    # Full-run loading deliberately keeps its chronological evidence on CPU.
+    # Online validation replays that evidence through the requested device model.
+    flat = flat.to(device)
     model, metadata = load_checkpoint(path.parent / "behavior-policy.pt", device=device)
     version = model.policy_version()
     if version != manifest["behavior_version"] or flat.behavior_version != version:

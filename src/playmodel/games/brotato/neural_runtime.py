@@ -8,7 +8,7 @@ Importing this module does not capture a screen or send input.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 from pathlib import Path
@@ -372,13 +372,142 @@ def load_rollout(path: Path | str, *, device='cpu') -> RolloutBatch:
     return batch.to(device)
 
 
+def _safe_recovery_release(report):
+    """Only completed, released scheduling guards may open a separate trial."""
+    if (report.get('reason') != 'controller_guard'
+            or report.get('controller_guard_reason') not in ('held_observation_expired', 'input_watchdog')
+            or report.get('recorder_complete') is not True or report.get('worker_stopped') is not True
+            or report.get('cleanup_errors') or report.get('capture_error') or report.get('safety_reason')):
+        return None
+    directory = Path(report['session_directory'])
+    events = json.loads((directory / 'control-events.json').read_text(encoding='utf-8'))
+    attempts = json.loads((directory / 'input-attempts.json').read_text(encoding='utf-8'))
+    if any(row.get('transmitted') is not True or row.get('error') for row in attempts):
+        return None
+    guard = next((index for index, row in enumerate(events) if row['kind'] == 'authority'
+                  and row['reason'] == report['controller_guard_reason']), None)
+    if guard is None:
+        return None
+    releases = [row for row in events[guard:] if row['kind'] == 'release']
+    if not releases or any(not isinstance(row.get('receipt'), dict)
+            or row['receipt'].get('transmitted') is not True
+            or row['receipt'].get('acknowledged') is False
+            or 'error' in row['reason'] or row['reason'].startswith('release_')
+            or not isinstance(row.get('send_finished_at_ns'), int)
+            or row['send_finished_at_ns'] >= row['deadline_ns'] for row in releases):
+        return None
+    return {'released_at_ns': max(row['send_finished_at_ns'] for row in releases),
+            'target_identity': report.get('target_identity'),
+            'previous_session': str(directory), 'guard': report['controller_guard_reason']}
+
+
+def _reacquire_combat(stream, background, vision, *, recovery, config, stop_file, directory):
+    """Two independent post-release observations; this helper sends no input."""
+    target = recovery.get('target_identity')
+    if not target or not target.get('hwnd'):
+        raise ValueError('recovery lacks original target identity')
+    sources, previous = [], None
+    until = time.perf_counter() + min(2., config.startup_seconds)
+    while len(sources) < 2 and time.perf_counter() < until:
+        if stop_file.exists() or stream.error:
+            raise OSError('stop or capture failure during released recovery')
+        background.check()
+        context = getattr(background, '_context', None)
+        if (context is not None and context.foreground() == target['hwnd']
+                and any(context.key_state(key) & 0x8000 for key in (0x57, 0x41, 0x53, 0x44))):
+            raise OSError('human intervention during released recovery')
+        frame = stream.latest(max_age_ms=config.max_frame_age_ms)
+        if frame is None:
+            time.sleep(.005)
+            continue
+        if (not _frame_ok(frame, now=time.perf_counter_ns(), max_age_ms=config.max_frame_age_ms,
+                          hwnd=target['hwnd']) or any(frame.metadata.get(key) != value
+                for key, value in target.items() if value is not None)):
+            raise ValueError('recovery target/frame changed')
+        observed = frame.metadata['capture_started_at_ns']
+        if observed <= recovery['released_at_ns'] or (previous is not None
+                and (frame.sequence <= previous.sequence or observed <= previous.available_at_ns)):
+            time.sleep(.005)
+            continue
+        state = vision.observe(frame.pixels, frame.metadata['sample_width'], frame.metadata['sample_height'],
+                               observed_at_ns=observed, alpha_mode='ignore')
+        if not state.combat_likely:
+            raise ValueError('released recovery requires two confirmed combat observations')
+        path = directory / f'recovery-combat-{len(sources)}.png'
+        path.write_bytes(_png(frame.metadata['sample_width'], frame.metadata['sample_height'], frame.pixels))
+        sources.append({'frame_ref': str(path.resolve()), 'frame_sha256': _sha(path),
+                        'observed_at_ns': observed, 'available_at_ns': frame.available_at_ns,
+                        'sequence': frame.sequence})
+        previous = frame
+    if len(sources) != 2:
+        raise ValueError('released recovery fresh observation pair unavailable')
+    proof = {**recovery, 'observations': sources, 'verified_at_ns': time.perf_counter_ns(),
+             'hidden_reset': True, 'gap_training_eligible': False}
+    _json(directory / 'scheduling-reacquisition.json', proof)
+    last = sources[-1]
+    return previous, StateEvidence('combat', last['frame_ref'], last['frame_sha256'],
+        last['observed_at_ns'], last['available_at_ns'], proof['verified_at_ns'],
+        'local_detector', 'two_fresh_visual_combat_observations_v1', True, True)
+
+
 def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentActorCritic,
+                     combat_entry: StateEvidence, config: PilotConfig = PilotConfig(),
+                     scheduling_recovery=False, recovery_only=False, **kwargs) -> dict:
+    """Optional bounded, released restarts; original attempt artifacts stay immutable."""
+    if type(scheduling_recovery) is not bool or type(recovery_only) is not bool:
+        raise ValueError('recovery flags must be boolean')
+    online = kwargs.get('online_session')
+    if scheduling_recovery and online is None and not recovery_only:
+        raise ValueError('fixed scored/training runs cannot silently recover across a gap')
+    started, attempts, recoveries, consecutive, total = time.perf_counter(), [], [], 0, 0
+    active_model, active_kwargs, current = model, dict(kwargs), config
+    while True:
+        report = _run_neural_trial_once(executable, output_root, model=active_model,
+            combat_entry=combat_entry, config=current, **active_kwargs)
+        attempts.append(report)
+        total += int(report.get('steps', 0))
+        if not scheduling_recovery:
+            return report
+        proof = _safe_recovery_release(report)
+        stop = kwargs.get('stop_file')
+        if (proof is None or (stop and Path(stop).exists())
+                or (Path(report['session_directory']) / 'STOP').exists()):
+            break
+        # A single successful post must not turn a persistent stall into an
+        # unbounded retry loop. One full collection chunk establishes progress.
+        if report.get('steps', 0) >= 64:
+            consecutive = 0
+        remaining = config.max_seconds - (time.perf_counter() - started)
+        if consecutive >= 2 or remaining <= 0 or total >= config.max_steps:
+            break
+        consecutive += 1
+        recoveries.append({**proof, 'attempt': len(attempts), 'consecutive_retry': consecutive,
+                           'previous_steps': report.get('steps', 0)})
+        if online is not None:
+            active_model = online.recorder.model
+            active_kwargs['build_state'] = online.recorder.build_state
+        active_kwargs.update(initial_hidden=active_model.initial_hidden(1), reset_first=True,
+                             first_action_callback=None, _recovery=proof)
+        current = replace(config, max_seconds=remaining, max_steps=config.max_steps-total)
+    result = dict(report)
+    result.update(scheduling_recoveries=recoveries,
+        attempt_reports=[str(Path(item['session_directory']) / 'report.json') for item in attempts],
+        total_actual_steps=total, recovery_only=recovery_only, evaluation_score_eligible=not recoveries and not recovery_only)
+    if recovery_only or (recoveries and online is None):
+        result.update(rollout_eligible=False, rollout_path=None, flat_rollout_path=None, initial_states_path=None,
+            recovery_completed=bool(report.get('reason') in ('terminal_wave_clear', 'terminal_death')
+                                    and report.get('rollout_eligible') is True and not report.get('error')))
+    _json(Path(report['session_directory']) / 'scheduling-recovery-summary.json', result)
+    return result
+
+
+def _run_neural_trial_once(executable: Path, output_root: Path, *, model: RecurrentActorCritic,
                      combat_entry: StateEvidence, config: PilotConfig = PilotConfig(), stop_file=None,
                      terminal_rules: TerminalRules | None = None, ocr_script=None, terminal_observer=None,
                      stream_factory=CaptureStream, background_factory=BackgroundController,
                      vision_factory=BrotatoVision, chunk_steps=32, burn_in=8, split='train',
                      initial_hidden=None, reset_first=None, scene_callback=None, build_state=None,
-                     first_action_callback=None, terminal_ocr_reader=None, online_session=None) -> dict:
+                     first_action_callback=None, terminal_ocr_reader=None, online_session=None, _recovery=None) -> dict:
     """Explicit live collection entry point; performs no PPO update or menu action.
 
     An optional hidden state carries history from a caller-owned menu path, but
@@ -432,6 +561,7 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
                      action_callback=online_session.record_action if online_session is not None else None)
     stream = controller = safety = terminal_worker = sink = None
     terminal = final_frame = None
+    first = None
     final_phase = 0
     reason, caught = 'startup_failed', None
     controller_guard_reason = None
@@ -454,7 +584,7 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
                 time.sleep(.005)
         if first is None or not _frame_ok(first, now=time.perf_counter_ns(), max_age_ms=config.max_frame_age_ms):
             raise ValueError('fresh startup frame required')
-        if not 0 <= first.metadata['capture_started_at_ns'] - combat_entry.observed_at_ns <= 60_000_000_000:
+        if _recovery is None and not 0 <= first.metadata['capture_started_at_ns'] - combat_entry.observed_at_ns <= 60_000_000_000:
             raise ValueError('combat entry must precede startup by at most 60 seconds')
         hwnd = first.metadata['hwnd']
         background = background_factory(hwnd, executable)
@@ -462,6 +592,9 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         sink = NeuralMovementSink(background, writer, hwnd, hidden, reset_first=reset_first,
                                   online_session=online_session)
         vision = vision_factory()
+        if _recovery is not None:
+            first, combat_entry = _reacquire_combat(stream, background, vision, recovery=_recovery,
+                config=config, stop_file=stop_file, directory=session)
         rng = torch.Generator(device=device).manual_seed(config.seed)
         # Complete lazy kernel setup before acquiring timed input authority.
         with torch.no_grad():
@@ -527,6 +660,10 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
             int(config.max_frame_age_ms * 1e6), int(config.policy_budget_ms * 1e6), 25_000_000,
             int(config.input_watchdog_ms * 1e6), config.max_steps * 8 + 64,
             policy_deadline_retries=1))
+        if _recovery is not None:
+            if stop_file.exists() or stream.error:
+                raise OSError('stop or capture failure before recovered authority')
+            background.check()
         generation = controller.arm()
         started = time.perf_counter_ns()
         safety = SafetyMonitor(controller, sink, stream, stop_file, config, started)
@@ -726,6 +863,10 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
             caught = f'rollout_rejected:{type(error).__name__}: {error}'
             rollout_path = flat_rollout_path = initial_states_path = None
     report = {'session_directory': str(session.resolve()), 'reason': reason, 'error': caught,
+              'capture_error': stream.error if stream is not None else None,
+              'safety_reason': safety.reason if safety is not None else None,
+              'target_identity': {key: first.metadata.get(key) for key in ('hwnd', 'pid', 'executable')}
+                                 if first is not None else None,
               'controller_guard_reason': controller_guard_reason,
               'policy_timings_path': str((session / 'policy-timings.json').resolve()),
               'guard_frame_path': str(guard_frame_path.resolve()) if guard_frame_path else None,

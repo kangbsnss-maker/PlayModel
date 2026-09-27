@@ -301,6 +301,17 @@ class NeuralRuntimeTests(unittest.TestCase):
                 self.assertEqual(sink.sent_count, 0)
                 self.assertEqual(sink.transport_attempts, [])
 
+    def test_native_background_receives_original_deadline_and_preserves_stage_evidence(self):
+        action, sink = self.action_and_sink()
+        deadline = time.perf_counter_ns() + 1_000_000_000
+        sink.background.set_movement_before = Mock()
+        sink.background.last_movement_timing = {'check_finished_at_ns': 123, 'posted_keys': 1}
+        sink.send(action, generation=2, observation_sequence=1, deadline_ns=deadline)
+        sink.background.set_movement.assert_not_called()
+        sink.background.set_movement_before.assert_called_once_with({0x44}, deadline_ns=deadline)
+        self.assertEqual(sink.transport_attempts[0]['background_stages'],
+                         sink.background.last_movement_timing)
+
     def test_transport_error_preserves_unknown_attempt_and_excludes_rollout(self):
         def fail_after_possible_partial_input():
             raise OSError('partially posted input cannot be confirmed')

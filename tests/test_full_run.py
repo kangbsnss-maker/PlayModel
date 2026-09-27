@@ -366,6 +366,55 @@ class ResumeOrchestrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'persisted cycle file changed'):
             self.module.CycleState(journal.directory)
 
+    def test_recovered_partial_death_never_finishes_or_scores_a_full_trajectory(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from playmodel.games.brotato.pilot import PilotConfig
+        coordinator = object.__new__(self.module.LocalCycle)
+        coordinator.root = Path(__file__).resolve().parents[1]
+        coordinator.output, coordinator.operation_id = self.root, None
+        coordinator.runtime_source_hashes = self.module._runtime_contract(coordinator.root)
+        coordinator.evaluation_scope_id = 'partial-fixture'
+        coordinator.status = None
+        coordinator.stop_file = self.root/'STOP'
+        coordinator.executable, coordinator.ocr_script = self.root/'unused.exe', self.root/'unused.ps1'
+        coordinator.seed, coordinator.max_run_seconds = 0, 30
+        coordinator._training_combat_callback = Mock(return_value=None)
+        terminal = self.root/'terminal'
+        terminal.mkdir()
+        (terminal/'terminal.json').write_text(json.dumps({'kind':'death'}))
+        model, records = object(), []
+        def recorder_factory(*args, **kwargs):
+            recorder = SimpleNamespace(model=model, hidden=None, build_state=None, records=[],
+                rejection_reasons=[], closed=False, append_combat_report=Mock(), finish=Mock(),
+                abort=Mock(return_value={'training_eligible':False, 'full_run_complete':False}))
+            records.append(recorder)
+            return recorder
+        menu = SimpleNamespace(pending_decision=None, awaiting_application=False)
+        def session(*args, **kwargs):
+            outcome = kwargs['combat_runner'](coordinator.executable, self.root,
+                                              config=PilotConfig(max_seconds=30))
+            self.assertEqual(outcome['status'], 'neural_rollout_ready')
+            return {'session_directory':str(terminal), 'reason':'wave_limit'}
+        with patch('playmodel.learning.recurrent_ppo.load_checkpoint', return_value=(model, {})), \
+             patch('playmodel.learning.full_run.FullRunRecorder', side_effect=recorder_factory), \
+             patch('playmodel.games.brotato.neural_menu_controller.NeuralMenuController', return_value=menu), \
+             patch('playmodel.games.brotato.session.run_session', side_effect=session), \
+             patch('playmodel.games.brotato.neural_runtime.run_neural_trial', return_value={
+                 'recovery_only':True, 'recovery_completed':True, 'reason':'terminal_death',
+                 'terminal_kind':'death', 'session_directory':str(terminal)}) as trial:
+            report = coordinator.collect_run(self.source, split='evaluation', tag='recovery', partial=True)
+        self.assertTrue(report['recovery_completed'], report)
+        self.assertFalse(report['training_eligible'])
+        self.assertFalse(report['full_run_complete'])
+        self.assertFalse(report['evaluation_score_eligible'])
+        self.assertTrue(trial.call_args.kwargs['scheduling_recovery'])
+        self.assertEqual(len(records), 2)
+        for recorder in records:
+            recorder.append_combat_report.assert_not_called()
+            recorder.finish.assert_not_called()
+            recorder.abort.assert_called_once()
+
     def test_finished_collection_is_recovered_after_intent_only_crash(self):
         from unittest.mock import patch, Mock
         coordinator = object.__new__(self.module.LocalCycle)

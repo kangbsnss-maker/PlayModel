@@ -106,6 +106,17 @@ class OnlinePPOTests(unittest.TestCase):
                 self.start()
         spawn.assert_not_called()
 
+    @unittest.skipUnless(torch.cuda.is_available(), 'CUDA unavailable')
+    def test_cuda_fragment_validation_and_optimizer_share_device(self):
+        self.fragment()
+        request = online._request(self.manifest, root=self.repo, output=self.output,
+                                  device='cuda', seed=0, stop_file=None)
+        directory = self.root/'cuda-training'
+        directory.mkdir()
+        report = online._train(request, directory, lambda **kwargs: None)
+        self.assertGreater(report['optimizer_steps'], 0)
+        self.assertTrue(report['checkpoint_reload_verified'])
+
     def test_bootstrap_value_mismatch_is_rejected(self):
         self.fragment(next_delta=.1)
         with self.assertRaisesRegex(ValueError, "bootstrap value"):

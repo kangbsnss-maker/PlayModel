@@ -27,3 +27,17 @@
 5. 실제 optimizer와 실제 새 버전 송신을 구분해 기록한다. 새 실패는 같은 오류명만 보고 이전 수정 실패로 단정하지 않는다.
 
 핵심 검사: `test_neural_runtime`, `test_stream_fresh_requests`, `test_online_runtime`, `test_online_ppo`, `test_full_run`, `test_recurrent_pipeline_overlap`, `test_setup_recovery`, `test_obs_startup`.
+
+## 시간·토큰 소모 점검 — 20:14 KST
+
+온라인 실행 최초 시작 19:49:57부터 약 24분 동안 launcher 재시작 6회, 수집 operation 8개(중첩 복구 포함). 전투 report 5개의 실제 송신 합계 573개. 이 중 새 학습판은 32개에서 중단했고, 나머지는 기존 판 복구 기록이다. 온라인 학습 fragment 0개, optimizer 작업 0개, 새 정책 적용 0회. 따라서 시간 대부분은 학습 연산이 아니라 개발·연결·복구·재시도에 쓰였다. 전체 503검사의 실행 시간은 62.192초이며, 다른 선택 검사는 별도다. 정확한 에이전트 토큰 청구량은 이 기록으로 계산할 수 없다.
+
+재시도 사유 순서: OBS 자체 충돌 → 난이도 화면 재개 거부 → Escape 중복으로 타이틀 이동 → 캐릭터 화면 재개 거부 → 입력 31.39ms/25ms 만료 → 관측 250ms 만료. 메뉴 재개 경로를 한 번에 통합 검증하지 않은 개발 방식이 불필요한 반복을 늘렸다. 높은 추론 비용, 긴 문맥·파일 반복 조회, 에이전트 왕복도 토큰을 썼다. 소모 비율은 측정 자료가 없어 단정하지 않는다.
+
+현재 실행은 정지 상태다. 일시 지연 후 안전 해제·새 관측·별도 구간 재개 코드는 작업 중이며, 실게임 성공으로 보고하지 않는다. 다음 실행의 최소 성공 기준은 동일 학습판에서 `fragment → optimizer step → 실제 새 버전 송신` 한 번을 증명하는 것이다. 그 전에는 추가 모델 기능·벤치마크·장기 평가 범위로 넓히지 않는다.
+
+### 후속 검증 — 20:20 KST
+
+일시 지연 복구 통합 후 519검사 PASS(63.345초). 20:16 재개에서 이전 판 복구를 마쳤고 새 학습판에서 실제 fragment 1개를 확정했다. 이후 GPU worker가 CPU chronological trajectory를 그대로 재검증해 장치 불일치로 중단했다. 원래 `load_full_run`의 CPU evidence 계약은 유지하고 online 검증 경계에서만 `flat.to(device)`를 추가했다. 기존 CPU 검사만으로 실제 CUDA 경로를 보장한 것이 검증 공백이었다.
+
+CUDA optimizer 회귀 검사 PASS(2.341초). 새 플레이 없이 보존된 `fragment-fd35e9b37dac4639824064422e5db2d4`를 별도 작업에서 학습: optimizer 4회, 학습 2.844초, KL·저장·재로딩 확인. 원본과 실패 기록은 보존했다. 후보는 `artifacts/online-saved-fragment-validation`에 별도 저장했으며 이 검증만으로 전투 중 적용을 주장하지 않는다. 20:20:31 자동 프로그램 재개.

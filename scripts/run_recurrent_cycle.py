@@ -548,6 +548,8 @@ class LocalCycle:
                 kwargs['first_action_callback'] = first_action
             if online is not None:
                 kwargs['online_session'] = online
+            if online is not None or partial:
+                kwargs.update(scheduling_recovery=True, recovery_only=partial)
             if self.status:
                 self.status.update(phase="combat", recorded_transitions=len(recorder.records))
             result = run_neural_trial(executable, output_root, model=recorder.model,
@@ -572,6 +574,25 @@ class LocalCycle:
                 if self.status:
                     self.status.update(phase='menu', online_learning=online_progress(),
                                        last_combat_outcome=result.get('terminal_kind'))
+                return result
+            if partial and result.get('recovery_only'):
+                accepted = (result.get('recovery_completed') is True
+                            and result.get('reason') in ('terminal_wave_clear', 'terminal_death')
+                            and not result.get('error'))
+                if accepted:
+                    if menus.pending_decision is not None or menus.awaiting_application:
+                        raise ValueError('recovery cannot reset unresolved menu memory')
+                    previous_build = deepcopy(recorder.build_state)
+                    recorder.abort(directory / ('recovery-history-' + uuid.uuid4().hex),
+                                   'interrupted recovery history excluded from learning and evaluation')
+                    recorder = FullRunRecorder(model, run_id, split='evaluation')
+                    recorder.build_state = previous_build
+                    menus.recorder = recorder
+                    if result.get('terminal_kind') == 'death':
+                        death_evidence = json.loads((Path(result['session_directory']) / 'terminal.json').read_text(encoding='utf-8'))
+                else:
+                    recorder.invalidate('partial recovery combat rejected: ' + str(result.get('reason')))
+                result['status'] = 'neural_rollout_ready' if accepted else 'aborted'
                 return result
             if not result.get("rollout_eligible") or not result.get("flat_rollout_path"):
                 recorder.invalidate("combat segment rejected: " + str(result.get("reason")))
@@ -625,6 +646,9 @@ class LocalCycle:
                           'note': 'versioned fragments train independently; aggregate is not a fixed-policy PPO trajectory'}
                 if not frozen['full_run_complete']:
                     stop_category = 'user_stop' if self.stop_file.exists() else 'runtime_error'
+            elif partial and ((death_evidence is not None and not recorder.rejection_reasons) or verified_result):
+                verified_result = True
+                frozen = recorder.abort(directory / 'trajectory', 'partial recovery reached a verified ending; excluded history')
             elif death_evidence is not None and not recorder.rejection_reasons:
                 frozen = recorder.finish(directory / "trajectory", kind="death", evidence=death_evidence)
             elif partial and verified_result:

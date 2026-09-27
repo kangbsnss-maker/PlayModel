@@ -130,6 +130,43 @@ class OnlineRuntimeTests(unittest.TestCase):
             self.fixture.run_trial(split='evaluation', online_session=self.manager)
         self.assertEqual(self.fixture.state.count, 0)
 
+    def test_scheduling_recovery_excludes_guard_tail_before_fresh_train_fragment(self):
+        from playmodel.games.brotato.neural_runtime import run_neural_trial
+        from playmodel.games.brotato.pilot import PilotConfig
+        from playmodel.learning.recurrent_ppo import RecurrentActorCritic
+        self.manager.chunk_actions = 64
+        self.fixture.state.menu = True
+        evidence, calls = [], [0]
+        def terminal():
+            if self.fixture.state.count < 2:
+                return None
+            if not evidence:
+                evidence.append(self.fixture.evidence('wave_clear'))
+            return evidence[0]
+        original = RecurrentActorCritic.step
+        def slow(model, *args, **kwargs):
+            calls[0] += 1
+            if calls[0] == 3:
+                time.sleep(.12)
+            return original(model, *args, **kwargs)
+        config = PilotConfig(max_seconds=4, max_steps=20, max_frame_age_ms=80,
+            input_watchdog_ms=200, policy_budget_ms=200, startup_seconds=1, terminal_wait_seconds=1, tick_ms=2)
+        with patch.object(RecurrentActorCritic, 'step', slow), \
+                patch('playmodel.learning.online_ppo.start_online_job', side_effect=self.fake_job):
+            report = run_neural_trial(self.root/'game', self.root/'trials', model=self.model,
+                combat_entry=self.fixture.evidence('combat'), config=config, terminal_observer=terminal,
+                scheduling_recovery=True, online_session=self.manager, **self.fixture.factories())
+        self.assertEqual(report['reason'], 'terminal_wave_clear', report)
+        self.assertTrue(report['online_collection_eligible'], report)
+        self.assertEqual(len(report['scheduling_recoveries']), 1)
+        snapshot = self.manager.snapshot()
+        self.assertEqual(sum(item['actions'] for item in snapshot['excluded_tails']), 1)
+        self.assertEqual(len(snapshot['fragments']), 1)
+        _, _, _, flat, _, _ = _load_fragment(snapshot['fragments'][0]['manifest_path'])
+        self.assertEqual(int(flat.valid.sum()), 1)
+        self.assertTrue(flat.reset[0, 0])
+        self.assertEqual(float(flat.rewards.sum()), 1.)
+
     def test_unsealed_wave_tail_has_only_verified_reward(self):
         self.manager.chunk_actions = 64
         self.fixture.state.menu = True
