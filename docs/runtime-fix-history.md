@@ -41,3 +41,7 @@
 일시 지연 복구 통합 후 519검사 PASS(63.345초). 20:16 재개에서 이전 판 복구를 마쳤고 새 학습판에서 실제 fragment 1개를 확정했다. 이후 GPU worker가 CPU chronological trajectory를 그대로 재검증해 장치 불일치로 중단했다. 원래 `load_full_run`의 CPU evidence 계약은 유지하고 online 검증 경계에서만 `flat.to(device)`를 추가했다. 기존 CPU 검사만으로 실제 CUDA 경로를 보장한 것이 검증 공백이었다.
 
 CUDA optimizer 회귀 검사 PASS(2.341초). 새 플레이 없이 보존된 `fragment-fd35e9b37dac4639824064422e5db2d4`를 별도 작업에서 학습: optimizer 4회, 학습 2.844초, KL·저장·재로딩 확인. 원본과 실패 기록은 보존했다. 후보는 `artifacts/online-saved-fragment-validation`에 별도 저장했으며 이 검증만으로 전투 중 적용을 주장하지 않는다. 20:20:31 자동 프로그램 재개.
+
+### 실제 온라인 판 검증
+
+`training-c285423a52964cf69f2a1e632089ecdc/cycle-run.json`: 정상 사망까지 전체 판 완료, 전투·메뉴 수집 구간 68.942초(시작 메뉴 시간 제외), 전투 입력 588개, 확정 fragment 4개, 완료한 learner 작업 3개, 전투 중 실제 새 정책 적용 3회, error 없음. 각 완료 작업의 optimizer step은 4회다. 이후 고정 source 평가판 전투 진입 확인. 학습 실력 향상·장시간 무중단·모든 게임 동작 학습 완료를 의미하지 않는다.
