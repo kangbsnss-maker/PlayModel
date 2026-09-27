@@ -64,6 +64,7 @@ class PreferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             learner = Learner.__new__(Learner)
             learner.output, learner.base_hash = Path(directory), 'base'
+            learner.graph_hash = 'synthetic-graph'
             learner.head_hash = lambda: 'unchanged-head'
             learner.preference_resume = 'synthetic_test'
             learner.preferences = default_preferences()

@@ -44,6 +44,12 @@ class TacticalWorkerTests(unittest.TestCase):
                                     'observed_at_ns': 100, 'frame_ref': str(self.frame),
                                     'frame_sha256': digest(self.frame)}}
         self.choice = self.root / 'choice-d.json'
+        visual = self.root / 'visual.rgb'
+        visual.write_bytes(bytes(3 * 96 * 96))
+        self.record['tokens'] = {'visual_window': [{'path': str(visual), 'sha256': digest(visual),
+            'source_path': str(self.frame), 'source_sha256': digest(self.frame),
+            'observed_at_ns': 100, 'available_at_ns': 105,
+            'transform': 'bgra_to_rgb_area96_round_uint8_v1'}]}
         self.record['preference_hash'] = self.learner.preference_hash
         observation = self.root / 'observation.json'
         observation.write_text(json.dumps({'evidence': self.record['evidence'],
@@ -124,9 +130,26 @@ class TacticalWorkerTests(unittest.TestCase):
         result = self.learner.finish('wave_clear', self.outcome(160))
         self.assertEqual(result['reason'], 'forced_actions_have_no_policy_gradient')
 
-    def test_outcome_before_send_rejected(self):
+    def test_outcome_before_send_excluded_without_stopping(self):
         self.learner.accept_tactic('d', self.application())
+        result = self.learner.finish('wave_clear', self.outcome(139))
+        self.assertEqual(result['reason'], 'no_choices_before_terminal_observation')
+        self.assertEqual(self.learner.accepted, [])
+        evidence = json.loads(next(self.root.glob('boundary-excluded-*.json')).read_text())
+        self.assertEqual(evidence['decisions'], ['d'])
+        self.assertFalse(evidence['reward_assigned'])
+
+    def test_wrong_version_still_rejected_even_after_outcome(self):
+        self.learner.accept_tactic('d', self.application())
+        self.record['behavior_version'] = 'wrong'
         with self.assertRaisesRegex(ValueError, 'follow'):
+            self.learner.finish('wave_clear', self.outcome(139))
+
+    def test_late_receipt_tampering_still_rejected(self):
+        application = self.application()
+        self.learner.accept_tactic('d', application)
+        Path(application['receipt_path']).write_text('{}', encoding='utf8')
+        with self.assertRaisesRegex(ValueError, 'receipt hash'):
             self.learner.finish('wave_clear', self.outcome(139))
 
     def test_cross_run_outcome_rejected(self):

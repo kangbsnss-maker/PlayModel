@@ -59,6 +59,12 @@ def validate_distribution(options, probabilities):
 
 def validate_resume_report(bundle):
     report = bundle.get('report', {})
+    visual_keys = any(key.startswith('visual_context.') for key in bundle.get('head', {}))
+    if visual_keys and (bundle.get('model_schema') != 'playmodel.visual-goal.v1'
+                       or report.get('model_schema') != 'playmodel.visual-goal.v1'
+                       or report.get('encoder_frozen_scope') != 'text_encoder_only'
+                       or report.get('visual_encoder_trainable') is not True):
+        raise ValueError('Visual decision checkpoint lacks its learning contract')
     kls = report.get('kl_per_choice')
     if (report.get('accepted') is not True or report.get('optimizer_steps') != 1
             or report.get('encoder_hash_before') != bundle.get('encoder_hash')

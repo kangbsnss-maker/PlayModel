@@ -30,6 +30,7 @@ class LayaMenuController(NeuralMenuController):
     def __init__(self, recorder, *, client, **kwargs):
         super().__init__(recorder, **kwargs)
         self.client = client
+        self.economy = None
 
     def _sample(self, current, previous_action, prepared_at):
         options = {}
@@ -48,6 +49,7 @@ class LayaMenuController(NeuralMenuController):
         frame = Path(current.frame_id)
         build = self.recorder.build_state.snapshot() if self.recorder.build_state else {}
         state = {'game': 'Brotato', 'scene': current.scene, 'wave': current.wave,
+                 'training_intent': getattr(self, 'training_intent', 'survive and progress'),
                  'currency': current.currency, 'weapon_fill': current.weapon_fill,
                  'previous_actual_movement': previous_action,
                  'last_observed_stats': {key: value for key, value in build.get('stats', {}).items()
@@ -55,11 +57,19 @@ class LayaMenuController(NeuralMenuController):
                  'weapon_names': [weapon['name'] for weapon in build.get('weapons', [])],
                  'weapon_count': build.get('weapon_count'),
                  'unknown': 'missing stats; current HP; item effects; unlisted inventory'}
+        if self.economy is not None:
+            state['combat_memory'] = {key: self.economy.summary[key] for key in (
+                'tracked', 'hp_drop_proxy', 'target_hp_drop_proxy', 'visible_duration_proxy',
+                'pickup_missing_proxy', 'clear') if key in self.economy.summary}
+            state['value_predictions'] = self.economy.estimates(state, options)
+            state['value_revision'] = self.economy.revision
         evidence = {'frame_ref': str(frame), 'frame_sha256': hashlib.sha256(frame.read_bytes()).hexdigest(),
                     'observed_at_ns': current.observed_at_ns, 'available_at_ns': current.available_at_ns,
                     'game_build_id': current.game_build_id, 'ocr_sha256': current.ocr_sha256,
                     'run_id': self.recorder.run_id, 'build_snapshot': build,
                     'candidates': [asdict(candidate) for candidate in current.candidates]}
+        if self.economy is not None:
+            evidence['economic_model'] = self.economy.model_evidence()
         result = self.client.choose(state, options, evidence)
         action_id = result.get('action_id')
         if action_id not in options:
@@ -98,10 +108,17 @@ class LayaMenuController(NeuralMenuController):
         if pending is None or pending.sent_at_ns != application.sent_at_ns or not application.accepted:
             raise ValueError('Laya application lacks actual transport')
         self.client.accept(decision.decision_id, proof)
+        if self.economy is not None and decision.observation.scene == 'shop':
+            path = self.client.output / f'choice-{decision.decision_id}.json'
+            record = json.loads(path.read_text(encoding='utf8'))
+            record['_source_path'] = str(path.resolve())
+            self.economy.record_purchase(record, proof)
 
     def discard_interrupted_outcome(self):
         """A released combat gap cannot reward earlier menu choices."""
         self.client.abandon('released_combat_gap_outcome_excluded')
+        if self.economy is not None:
+            self.economy.abandon()
         self._pending = None
         self._previous_shop = self._ready_shop = None
         self._previous_loot = self._previous_stats = None
@@ -109,5 +126,7 @@ class LayaMenuController(NeuralMenuController):
         self._preparation_observations = 0
 
     def _fail(self, reason, *, details=None):
+        if self.economy is not None:
+            self.economy.abandon()
         self.client.abandon('menu_verification_failed:' + str(reason))
         return super()._fail(reason, details=details)

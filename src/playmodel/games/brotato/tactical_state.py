@@ -20,7 +20,7 @@ MAX_AGE_NS = 250_000_000
 TRACK_GAP_NS = 300_000_000
 STAT_NAMES = ('melee_damage', 'ranged_damage', 'speed', 'armor', 'dodge',
               'hp_regeneration', 'attack_speed')
-SCHEMA = 'brotato-unverified-tactics-v1'
+SCHEMA = 'brotato-visual-target-goals-v2'
 
 
 def _norm(vector):
@@ -73,8 +73,9 @@ def _profile(stats):
 
 
 class TacticalPlanner:
-    def __init__(self, *, clock=time.perf_counter_ns):
+    def __init__(self, *, clock=time.perf_counter_ns, training_intent='survive and progress'):
         self.clock = clock
+        self.training_intent = training_intent
         self._tracks = {}
         self._serial = 0
         self._previous_time = None
@@ -202,6 +203,12 @@ class TacticalPlanner:
                 options['avoid_crossing'] = 'Move sideways from predicted relative crossing.'
         else:
             options['move_open'] = 'Move toward open screen area.'
+        # Candidate identity stays stable as coordinates change. These are
+        # positional targets, not asserted enemy/tree identities or kill labels.
+        targets = sorted(tracks[:2], key=lambda row: row['track_id']) if not crossing else []
+        for target in targets:
+            options[f'hold_distance@{target["track_id"]}'] = (
+                f'Prioritize target {target["track_id"]}; maintain spacing.')
         pickups = [item for item in vision.pickups
                    if all(type(v) in (int, float) and math.isfinite(v)
                           for v in (item.x, item.y, item.radius, item.confidence))
@@ -228,8 +235,10 @@ class TacticalPlanner:
                  'risk_fields': 'relative x,y; relative vx,vy; pattern hypotheses',
                  'player': [round(value, 2) for value in player],
                  'risk_count': len(tracks), 'profile': profile,
+                 'training_intent': self.training_intent,
                  'stats': {key: stats[key] for key in STAT_NAMES if key in stats},
                  'stats_age_s': round(build['age_seconds'], 1) if build['age_seconds'] is not None else None,
+                 'targets_id_xy': [[row['track_id'], *[round(v, 2) for v in row['position']]] for row in targets],
                  'unknown': 'risk identity/owner; current HP; true weapon range; velocities are unverified relative estimates'}
         return self._result(state, options, world, parameters)
 
@@ -256,6 +265,12 @@ def execute_tactic(action_id: str, situation: dict, *, now_ns: int | None = None
     aspect = world['aspect_ratio']
     tracks = world['tracks']
     nearest = min(tracks, key=lambda row: _norm(row['relative']) - row['radius']) if tracks else None
+    if '@' in action_id:
+        family, identity = action_id.split('@', 1)
+        selected = next((row for row in tracks if str(row['track_id']) == identity), None)
+        if selected is None or family != 'hold_distance':
+            return 0
+        nearest, action_id = selected, family
     ring = world['parameters']['spacing']
     toward = _unit(nearest['relative']) if nearest else (0., 0.)
     away = (-toward[0], -toward[1])

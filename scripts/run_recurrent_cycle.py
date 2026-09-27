@@ -429,7 +429,8 @@ class LocalCycle:
         elif scene not in ("result", "difficulty", "main_menu", "character_selection", "weapon_selection"):
             raise OSError("A new cycle requires a result/death screen; the active run is preserved")
         setup = prepare_next(self.executable, root=self.root, character_slot=self.character_slot,
-                             weapon=self.weapon, record=True)
+                               weapon=self.weapon, record=True,
+                               **({'concept': self.campaign_concept} if getattr(self, 'campaign_concept', None) else {}))
         context = setup.get("context", {})
         if (setup.get("error") or not context.get("setup_complete")
                 or not all(context.get(key) for key in ("character_source", "weapon_source", "difficulty_menu_source"))):
@@ -467,6 +468,7 @@ class LocalCycle:
         from playmodel.learning.recurrent_ppo import load_checkpoint
         from playmodel.learning.full_run import FullRunRecorder
         from playmodel.games.brotato.neural_runtime import run_neural_trial, safe_observation_transition
+        from playmodel.games.brotato.neural_runtime import _safe_recovery_release
         from playmodel.games.brotato.neural_menu_controller import NeuralMenuController
         from playmodel.games.brotato.session import run_session
         operation_id = self.operation_id if not partial else None
@@ -612,6 +614,17 @@ class LocalCycle:
                 split=split, chunk_steps=32, burn_in=8, **kwargs)
             trials.append(result)
             result["training_performed"] = False
+            if choice_backend and not result.get('observation_transition'):
+                released = _safe_recovery_release(result)
+                if released is not None and not self.stop_file.exists():
+                    # Exhausted timed retries become an input-free UI boundary.
+                    # The next scene still needs two fresh observations; this
+                    # interrupted interval never supplies an outcome reward.
+                    observation_gap({'reason': 'released_controller_guard', **released})
+                    result.update(status='observation_wait', observation_transition={**released, 'blocked_scene': 'combat'},
+                        choice_learning={'status': 'excluded', 'reason': 'released_controller_guard'})
+                    observation_status('waiting_observation')
+                    return result
             if (choice_backend or partial) and result.get('observation_transition'):
                 transition = safe_observation_transition(result)
                 if transition is None or transition != result['observation_transition']:
@@ -722,7 +735,9 @@ class LocalCycle:
                 report = run_session(self.executable, directory / "segments", waves=10,
                     seconds=min(600, remaining), stop_file=self.stop_file, ocr_script=self.ocr_script,
                     record=True, edit=False, run_context=context, combat_runner=combat_runner,
-                    neural_menu=menus, observation_recovery=bool(choice_backend or partial),
+                      neural_menu=menus, observation_recovery=bool(choice_backend or partial),
+                      navigation_ledger=self.root / 'artifacts/local-learning/ui-navigation.jsonl',
+                      navigation_learning=split == 'train',
                     observation_gap_callback=observation_gap if choice_backend or partial else None,
                     observation_status_callback=observation_status)
                 segments.append(report["session_directory"])
@@ -736,8 +751,9 @@ class LocalCycle:
                     raise OSError('Session input release or recording completion failed')
                 if death_evidence is not None:
                     break
-                if (partial and report['reason'] == 'run_finished' and context.get('result_source')
-                        and not recorder.rejection_reasons and not report.get('release_error')
+                if ((partial or (choice_backend and observation_gaps))
+                        and report['reason'] == 'run_finished' and context.get('result_source')
+                        and not collection_errors() and not report.get('release_error')
                         and not report.get('error')):
                     verified_result = True
                     break
@@ -757,7 +773,7 @@ class LocalCycle:
                 if not frozen['full_run_complete']:
                     stop_category = 'user_stop' if self.stop_file.exists() else 'runtime_error'
             elif choice_backend:
-                complete = bool(death_evidence is not None and not failure and not collection_errors())
+                complete = bool((death_evidence is not None or verified_result) and not failure and not collection_errors())
                 frozen = recorder.abort(directory / 'trajectory', 'separate Laya choices excluded from CNN PPO')
                 audit_recorded_steps = frozen.get('steps', 0)
                 frozen.update(schema='playmodel.laya-run.v1', full_run_complete=complete,
@@ -803,10 +819,15 @@ class LocalCycle:
             "stop_category": stop_category,
             "verified_wave_clears": sum(row.get("terminal_kind") == "wave_clear" for row in trials),
             "setup_conditions": {key: context.get(key) for key in
-                ("character", "character_slot", "weapons", "difficulty", "endless_verified")},
+                ("character", "character_slot", "weapons", "difficulty", "endless_verified",
+                 "concept", "requested_weapon", "observed_weapon_names", "weapon_rotation_match")},
             "elapsed_seconds": time.perf_counter() - started,
             "observation_wait_seconds": observation_wait_seconds,
             "observation_gaps": observation_gaps,
+            "scheduling_recovery_count": sum(len(row.get('scheduling_recoveries') or []) for row in trials),
+            "completion_evidence": ({'kind': 'observed_result_after_quarantined_gap',
+                'frame_ref': context.get('result_source'), 'frame_sha256': context.get('result_sha256'),
+                'reward_assigned': False} if verified_result else None),
             "combat_intervals_ns": [row['actual_movement_interval_ns'] for row in trials
                                     if row.get('actual_movement_interval_ns')],
             "contact_projectile_damage_attribution": "not_implemented",
@@ -944,9 +965,12 @@ def _runtime_contract(root):
         'neural_choices.py', 'neural_menu_controller.py', 'state_features.py',
         'stats_roi_ocr.py', 'shop_learning.py', 'shop_currency_ocr.py',
         'pilot.py', 'menu_capture.py', 'ocr.py', 'capture.py', 'stream.py',
-        'background.py', 'interaction.py', 'setup_run.py')}
+          'background.py', 'interaction.py', 'setup_run.py', 'ui_layers.py', 'combat_experience.py')}
     for filename in ('src/playmodel/control/realtime.py',
-                     'src/playmodel/learning/full_run.py', 'src/playmodel/learning/recurrent_ppo.py',
+                       'src/playmodel/learning/full_run.py', 'src/playmodel/learning/recurrent_ppo.py',
+                         'src/playmodel/learning/visual_decision.py',
+                         'src/playmodel/learning/ui_navigation.py',
+                         'src/playmodel/learning/outcome_values.py',
                      'src/playmodel/learning/runtime_contract.py', 'scripts/run_recurrent_cycle.py'):
         hashes[filename] = _file_sha(root / filename)
     worker = 'src/playmodel/learning/recurrent_training_worker.py'

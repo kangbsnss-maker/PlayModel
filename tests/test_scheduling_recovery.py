@@ -115,6 +115,33 @@ class SchedulingRecoveryTests(unittest.TestCase):
             runtime.run_neural_trial(self.root/'game', self.root, model=self.fixture.model,
                 combat_entry=self.fixture.evidence('combat'), scheduling_recovery=True, split='evaluation')
 
+    def test_menu_during_reacquisition_hands_off_without_arming_or_input(self):
+        self.fixture.state.menu, self.fixture.state.count = True, 2
+        factories = self.fixture.factories()
+        original_stream = factories['stream_factory']
+
+        class IdentifiedStream(original_stream):
+            def latest(self, **kwargs):
+                frame = super().latest(**kwargs)
+                frame.metadata.update(pid=456, executable='game.exe')
+                return frame
+
+        factories['stream_factory'] = IdentifiedStream
+        proof = {'target_identity': {'hwnd': 123, 'pid': 456, 'executable': 'game.exe'},
+                 'released_at_ns': time.perf_counter_ns()}
+        with patch.object(runtime.RealtimeController, 'arm', side_effect=AssertionError('must not arm')):
+            report = runtime._run_neural_trial_once(self.root / 'game', self.root / 'trials',
+                model=self.fixture.model, combat_entry=self.fixture.evidence('combat'),
+                terminal_observer=lambda: None, _recovery=proof, **factories)
+        self.assertEqual(report['reason'], 'screen_changed', report)
+        self.assertIsNone(report['error'])
+        self.assertEqual(report['steps'], 0)
+        self.assertEqual(self.fixture.state.count, 2)
+        self.assertFalse(report['verified_terminal_boundary'])
+        transition = runtime.safe_observation_transition(report)
+        self.assertIsNotNone(transition, report)
+        self.assertFalse(transition['training_eligible'])
+
     def unsent_fixture(self, name):
         report = self.report(name, reason='sink_deadline')
         proof = dict(call_id=1, started_at_ns=11, deadline_ns=15, check_finished_at_ns=16,

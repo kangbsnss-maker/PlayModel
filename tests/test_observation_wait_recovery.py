@@ -20,7 +20,7 @@ from test_brotato_session_recovery import ocr
 
 class ObservationWaitTests(unittest.TestCase):
     def run_sequence(self, scenes, *, pending=False, stop=False, identity=False,
-                     release_error=False, budget=False):
+                     release_error=False, budget=False, blocked_scene=None):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary)
             controller, capture, reader, neural = Mock(), Mock(), Mock(), Mock()
@@ -76,6 +76,10 @@ class ObservationWaitTests(unittest.TestCase):
             report = session.run_session.__wrapped__(root / 'game.exe', root / 'sessions',
                 waves=1, seconds=10, stop_file=root / 'STOP', ocr_script=root / 'ocr',
                 combat_runner=combat, neural_menu=neural, observation_recovery=True,
+                run_context=({'observation_wait': {'phase': 'waiting_observation',
+                    'target_identity': {'hwnd': 1, 'pid': 2, 'executable': 'game.exe'},
+                    'released_at_ns': 1, 'blocked_scene': blocked_scene,
+                    'blocked_selection': 'unsupported'}} if blocked_scene else None),
                 observation_gap_callback=gaps.append, observation_status_callback=statuses.append)
             actions = json.loads((Path(report['session_directory']) / 'menu-actions.json').read_text())
             self.assertEqual(actions, [])
@@ -103,6 +107,22 @@ class ObservationWaitTests(unittest.TestCase):
         self.assertEqual(gaps[-1]['scene'], 'result')
         combat.assert_not_called()
         neural.handle.assert_called_once()
+
+    def test_same_unsupported_layer_does_not_repeatedly_abort_audit_or_rearm(self):
+        report, _, gaps, reads, combat, neural = self.run_sequence(
+            ['shop', 'shop', 'result', 'result'], blocked_scene='shop')
+        self.assertEqual(report['reason'], 'run_finished')
+        self.assertEqual(len(reads), 4)
+        self.assertEqual([row['reason'] for row in gaps], ['observation_resumed'])
+        neural.abort.assert_not_called()
+        combat.assert_not_called()
+
+    def test_exhausted_timing_guard_cannot_rearm_from_fresh_combat_frames(self):
+        report, _, gaps, _, combat, _ = self.run_sequence(
+            ['unknown', 'unknown', 'result', 'result'], blocked_scene='combat')
+        self.assertEqual(report['reason'], 'run_finished')
+        self.assertEqual([row['scene'] for row in gaps], ['result'])
+        combat.assert_not_called()
 
     def test_pending_menu_is_not_discarded_to_force_resume(self):
         report, _, gaps, _, combat, neural = self.run_sequence(['pause'], pending=True)

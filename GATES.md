@@ -1,14 +1,30 @@
-# Preparation acceptance
+# Gates: combat, economy and UI learning integration
 
-OWNS: README.md, AGENTS.md, pyproject.toml, .gitignore, .gitattributes, .github/**, src/**, tests/**, scripts/**, configs/**, docs/development.md, docs/github-readiness.md, docs/preparation-report.md, docs/source-cleanup.json, data/README.md, models/README.md, artifacts/README.md, media/README.md, GATES.md
+OWNS: src/playmodel/**, scripts/**, tests/**, docs/**, README.md, GATES.md
 
-- [x] G1: All source pages analyzed and consequential decisions reviewed by gpt-6-astra with ultra reasoning.
-  EVIDENCE: research_design used gpt-6-astra/ultra; all 29 originals visually inspected; page-notes and source-manifest reviewed by root, with independent visual checks on pages 1-4,12,16,24,29. Architecture, M0-M7 roadmap, three ADRs, genre/media workflow and primary sources reviewed. Preservation verifier defect fixed and independently re-reviewed; pre-delete full verification passed 21 tests and all 29 source hashes/sizes/dimensions. Leaf manual gates 2/2 met.
-- [x] G2: Repository preparation utilities and documentation links pass the project verification command.
-  CHECK: python scripts/verify_preparation.py
+Scope: local evidence-based learning, preserving single input writer and existing weights.
+
+Earlier preparation evidence: [preserved ledger](docs/gates/preparation-accepted.md).
+
+- [x] G1: Object observations, HP uncertainty, motion learning, collection and boundary evidence are causal and persist.
+  CHECK: .venv\Scripts\python.exe -m unittest discover -s tests -p test_combat_experience.py
+  EXPECT: /^OK\r?$/m
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\0. PlayModel; path=9158a800b609/38 entries; output=Ran 6 tests in 3.476s | OK
+- [x] G2: Fast risk arbitration and combat-to-shop learning are connected without false action credit.
+  CHECK: .venv\Scripts\python.exe -m unittest discover -s tests -p test_combat_economy.py
+  EXPECT: /^OK\r?$/m
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\0. PlayModel; path=9158a800b609/38 entries; output=Ran 9 tests in 2.364s | OK
+- [x] G3: UI graph learns actual transitions and selects wrap/short paths without bypassing confirmation.
+  CHECK: .venv\Scripts\python.exe -m unittest discover -s tests -p test_ui_navigation.py
+  EXPECT: /^OK\r?$/m
+  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\0. PlayModel; path=9158a800b609/38 entries; output=Ran 6 tests in 0.039s | OK
+- [x] G4: Full regression and preparation checks pass.
+  CHECK: .venv\Scripts\python.exe scripts/verify_preparation.py
   EXPECT: PREPARATION_VERIFIED
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\0. PlayModel; path=9443762079a6/40 entries; output=Ran 21 tests in 0.411s | OK
-- [x] G3: Original research PNGs deleted after G1-G2; manifest and page notes retained.
-  CHECK: python scripts/verify_preparation.py --check-cleanup
-  EXPECT: CLEANUP_VERIFIED
-  EVIDENCE: exit=0; shell=C:\WINDOWS\system32\cmd.exe; cwd=D:\0. PlayModel; path=9443762079a6/40 entries; output=CLEANUP_VERIFIED
+  EVIDENCE: exit=0; shell=PowerShell via Invoke-Hidden; cwd=D:\0. PlayModel; output=Ran 702 tests in 74.901s | OK | PREPARATION_VERIFIED. Direct rerun after an earlier combined gate run failed without retaining its full failure output.
+- [x] G5: Astra design/review resolves blocking issues and documentation distinguishes observations from labels.
+  EVIDENCE: jev_design_review (gpt-6-astra/ultra), read-only final review: no blocking findings; evaluation recovery exclusion, model provenance, UI direction-only boundary, contextual purchase values and gap credit clearing confirmed.
+- [ ] G6: Reviewed code/docs are committed and remote branch matches the pushed commit; no game/model/data files staged.
+  EVIDENCE: pending
+- [ ] G7: Authorized continuous learning resumes with preserved weights, records new structures and accepts a real update.
+  EVIDENCE: pending

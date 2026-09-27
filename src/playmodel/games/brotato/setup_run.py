@@ -65,7 +65,8 @@ def focused_tile(pixels: bytes, width: int, boxes: dict) -> int | None:
     return scores[0][1] if scores[0][0]>.65 and scores[1][0]<.35 else None
 
 
-def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: str, record: bool) -> dict:
+def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: str, record: bool,
+                 concept: str | None = None) -> dict:
     if not 1<=character_slot<=50: raise ValueError('Visible calibrated character slot must be 1..50')
     token=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-setup-'+uuid.uuid4().hex[:6]
     directory=root/'artifacts/run-setup'/token
@@ -73,7 +74,7 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
     directory.mkdir(parents=True)
     controller=None
     recording=None
-    context={'character_slot':character_slot,'concept':weapon+'-build','endless_requested':True,
+    context={'character_slot':character_slot,'concept':concept or weapon+'-build','endless_requested':True,
              'character':'Unknown','weapons':[],'difficulty':'Nightmare'}
     visited=[]
     attempted_slot=None
@@ -162,8 +163,13 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                     repeated = bool(name and name in weapon_names)
                     if name and name not in weapon_names: weapon_names.append(name)
                     wanted=weapon.casefold().replace(' ','')
-                    if name and (wanted in name.casefold().replace(' ','') or repeated or len(weapon_names)>=12):
-                        context.update(weapons=[name],weapon_source=str(source),concept=name+'-build')
+                    rotating = weapon.startswith('@rotate:')
+                    rotation_match = rotating and len(weapon_names) > int(weapon.split(':', 1)[1])
+                    if name and (rotation_match or (not rotating and wanted in name.casefold().replace(' ',''))
+                                 or repeated or len(weapon_names)>=12):
+                        context.update(weapons=[name],weapon_source=str(source),concept=concept or name+'-build',
+                                       requested_weapon=weapon, observed_weapon_names=list(weapon_names),
+                                       weapon_rotation_match=rotation_match if rotating else None)
                         key='enter'
                     else:
                         key='right'

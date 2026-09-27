@@ -28,6 +28,18 @@ class TacticalStateTests(unittest.TestCase):
         self.now += int(seconds * 1e9)
         return self.observe(**kwargs)
 
+    def test_target_choice_changes_position_goal_and_expires_when_target_disappears(self):
+        situation = self.observe(hazards=((.2, .5, .02), (.8, .5, .02)))
+        targets = [key for key in situation['options'] if '@' in key]
+        self.assertEqual(len(targets), 2)
+        actions = [execute_tactic(key, situation, now_ns=self.now) for key in targets]
+        self.assertNotEqual(actions[0], actions[1])
+        old_signature = situation['signature']
+        fresh = self.step(hazards=((.2, .5, .02), (.8, .5, .02)))
+        self.assertEqual(fresh['signature'], old_signature)
+        missing = self.step(hazards=((.2, .5, .02),))
+        self.assertEqual(execute_tactic(targets[1], missing, now_ns=self.now), 0)
+
     def test_invalid_player_confidence_and_pickups_are_not_action_geometry(self):
         for confidence in (float('inf'), float('nan'), 1.1, 0):
             vision = replace(self.view(), player_confidence=confidence)

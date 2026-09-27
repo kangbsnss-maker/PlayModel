@@ -1,7 +1,7 @@
-"""Local Laya actor and head-only outcome learner; one serialized IPC worker.
+"""Local Laya decisions with trainable causal visual context; serialized IPC.
 
 This is REINFORCE from verified game events, not RLCD teacher distillation.
-The encoder is frozen. Actor and learner use eval mode so dropout cannot change
+The text encoder is frozen. Actor and learner use eval mode so dropout cannot change
 the behavior probabilities. No output is a BC label or a CNN PPO transition.
 """
 from __future__ import annotations
@@ -54,6 +54,11 @@ class Learner:
             if digest(self.model_dir / relative) != expected:
                 raise ValueError('Laya source hash mismatch: ' + relative)
         self.base_hash = digest(self.model_dir / 'source-manifest.json')
+        package = Path(__file__).resolve().parents[1]
+        self.graph_sources = {name: digest(package / name) for name in (
+            'learning/visual_decision.py', 'laya/forward.py', 'laya/visual.py',
+            'laya/worker.py', 'laya/encoding.py', 'games/brotato/capture.py')}
+        self.graph_hash = hashlib.sha256(canonical(self.graph_sources).encode()).hexdigest()
         self.agent = Agent(str(self.model_dir), device=device, fast=False, compile=False)
         self.model, self.device = self.agent.model, self.agent.device
         self.model.eval()
@@ -65,15 +70,34 @@ class Learner:
         self.preferences = default_preferences()
         self.preference_hash = preference_hash(self.preferences)
         self.checkpoint = None
+        self.visual_history, self.visual_context_key = [], None
         self.preference_resume = 'new_session_default'
+        object_migration = False
         if checkpoint:
             bundle = torch.load(checkpoint, map_location='cpu', weights_only=True)
             validate_resume_report(bundle)
+            if any(key.startswith('visual_context.') for key in bundle['head']):
+                if bundle.get('graph_hash') != self.graph_hash:
+                    from .graph_migration import validate_object_branch_migration
+                    migration = validate_object_branch_migration(bundle)
+                    object_migration = True
+                    _save(self.output / 'graph-migration.json', {
+                        **migration, 'checkpoint': str(Path(checkpoint).resolve()),
+                        'checkpoint_sha256': digest(checkpoint), 'new_graph_hash': self.graph_hash})
+                self._attach_visual_context(seed)
             restored_preferences = checkpoint_preferences(bundle)
             if bundle['base_hash'] != self.base_hash or bundle['encoder_hash'] != self.encoder_hash:
                 raise ValueError('Laya checkpoint base/encoder mismatch')
-            self._restore(bundle['head'])
-            if self.head_hash() != bundle['head_hash']:
+            heads = bundle['head']
+            if object_migration:
+                additions = {k:v for k,v in self._heads().items() if k not in heads}
+                if not additions or any(not k.startswith(('visual_context.object_encoder.',
+                            'visual_context.object_project.')) for k in additions):
+                    raise ValueError('Unexpected object migration tensor additions')
+                self._restore({**heads, **additions})
+            else:
+                self._restore(heads)
+            if _tensor_hash((k,v) for k,v in self._heads().items() if k in heads) != bundle['head_hash']:
                 raise ValueError('Laya checkpoint head hash mismatch')
             self.checkpoint = str(Path(checkpoint).resolve())
             self.preference_resume = ('checkpoint_preferences_restored' if 'preferences' in bundle
@@ -82,12 +106,24 @@ class Learner:
             self.preference_hash = preference_hash(self.preferences)
             if bundle.get('preference_hash', self.preference_hash) != self.preference_hash:
                 raise ValueError('Checkpoint preference hash mismatch')
+        if not hasattr(self.model, 'visual_context'):
+            self._attach_visual_context(seed)
+        from .forward import ChoiceForward
+        self.choice_forward = ChoiceForward(self.model)
         self.version = self._version()
         self.preference_application = self._record_preferences()
         # Warm the actual forward path before fresh gameplay observations arrive.
         item, _ = self.encode({'scene': 'shop', 'health': 'unknown'}, {'a': 'Buy an item', 'b': 'Save money'})
         with torch.no_grad():
             self.probs(item)
+
+    def _attach_visual_context(self, seed):
+        from playmodel.learning.visual_decision import VisualDecisionContext
+        # Deterministic migration without changing the actor sampling generator.
+        with self.torch.random.fork_rng(devices=[]):
+            self.torch.manual_seed(seed)
+            self.model.visual_context = VisualDecisionContext(self.model.encoder.config.hidden_size)
+        self.model.visual_context.to(self.device).eval()
 
     def _heads(self):
         return {name: tensor for name, tensor in self.model.state_dict().items() if not name.startswith('encoder.')}
@@ -109,8 +145,8 @@ class Learner:
                 'head_tensor_summary_semantics': 'tensor_magnitude_not_gameplay_improvement'}
 
     def _version(self):
-        return hashlib.sha256((self.base_hash + self.head_hash() + ':laya-outcome-v4:tactics:preferences:'
-            + self.preference_hash + ':lossless-options:temperature=1').encode()).hexdigest()
+        return hashlib.sha256((self.base_hash + self.head_hash() + ':visual-goal-v1:causal-window4:preferences:'
+            + self.preference_hash + self.graph_hash + ':lossless-options:temperature=1').encode()).hexdigest()
 
     def configure_preferences(self, preferences):
         if self.pending or self.accepted:
@@ -160,7 +196,12 @@ class Learner:
         tensors = {key: batch[key].to(self.device) for key in
                    ('input_ids', 'attention_mask', 'marker_pos', 'marker_mask', 'qtype')}
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == 'cuda'):
-            logits, _ = self.model(**tensors, detach_encoder=True)
+            from .visual import tensor_window, object_tensor
+            visual = tensor_window(item['visual_window'], self.device) if item.get('visual_window') else None
+            objects = object_tensor(item['visual_window'], self.device) if item.get('visual_window') else None
+            logits = self.choice_forward(tensors,
+                key=(tuple(item['ids']), tuple(item['markers']), item['qtype']), visual_frames=visual,
+                object_frames=objects)
         # Neutral temperature defines the explicit training policy. Do not claim
         # the source model's task-specific confidence calibration transfers.
         return logits[0].float()
@@ -197,7 +238,20 @@ class Learner:
             if now >= evidence['expires_at_ns']:
                 raise ValueError('Tactical request expired before inference')
         item, question = self.encode(state, options)
-        bias = [self.preferences['values'].get(key, 0.0) if domain == 'combat_tactic' else 0.0 for key in options]
+        from .visual import snapshot, validate_window
+        context_key = (evidence.get('run_id'), evidence.get('epoch'), domain)
+        if context_key != self.visual_context_key or domain == 'menu':
+            self.visual_history = []
+        self.visual_context_key = context_key
+        self.visual_history = [row for row in self.visual_history
+            if 0 < observed - row['observed_at_ns'] <= 2_500_000_000
+            and row['available_at_ns'] <= available][-3:]
+        current_visual = snapshot(evidence, self.output)
+        item['visual_window'] = [*self.visual_history, current_visual]
+        validate_window(item['visual_window'], evidence)
+        self.visual_history = item['visual_window']
+        bias = [self.preferences['values'].get(key.split('@', 1)[0], 0.0)
+                if domain == 'combat_tactic' else 0.0 for key in options]
         with self.torch.no_grad():
             probabilities, raw_probabilities = self.probs(item, bias, return_raw=True)
             probabilities, raw_probabilities = probabilities.cpu(), raw_probabilities.cpu()
@@ -208,6 +262,8 @@ class Learner:
         decision_id = uuid.uuid4().hex
         record = {'schema': SCHEMA, 'decision_id': decision_id, 'decision_domain': domain, 'state': state, 'options': options,
                   'question': question, 'tokens': item, 'evidence': evidence,
+                  'model_schema': 'playmodel.visual-goal.v1',
+                  'graph_hash': self.graph_hash,
                   'action_id': list(options)[index], 'action_index': index,
                   'distribution': dict(zip(options, values)), 'log_probability': math.log(values[index]),
                   'raw_head_distribution': dict(zip(options, raw_probabilities.tolist())),
@@ -215,7 +271,7 @@ class Learner:
                   'options_order': list(options), 'applied_bias_vector': bias,
                   'preference_revision': self.preferences['revision'],
                   'preference_hash': self.preference_hash,
-                  'choice_basis': 'observed_state_and_model_weights_plus_explicit_human_logit_bias_not_model_chain_of_thought',
+                  'choice_basis': 'causal_pixels_and_observed_state_with_learned_visual_and_decision_weights_plus_human_bias',
                   'behavior_version': self.version, 'temperature': 1.0,
                   'sampling': 'categorical', 'decided_at_ns': decided,
                   'inference_ms': (decided - now) / 1e6, 'source': self.source,
@@ -293,6 +349,7 @@ class Learner:
         return {'status': 'discarded', 'decision_id': decision_id}
 
     def abandon(self, reason):
+        self.visual_history, self.visual_context_key = [], None
         _save(self.output / f'abandoned-{uuid.uuid4().hex}.json',
               {'reason': reason, 'accepted': [r['decision_id'] for r in self.accepted],
                'pending': list(self.pending), 'behavior_version': self.version})
@@ -350,7 +407,7 @@ class Learner:
             tactical = record.get('decision_domain') == 'combat_tactic'
             application = record['application']
             causal_time = application['sent_at_ns'] if tactical else application['verified_at_ns']
-            if record['behavior_version'] != self.version or observed <= causal_time:
+            if record['behavior_version'] != self.version or (not tactical and observed <= causal_time):
                 raise ValueError('Outcome must follow same-version accepted choices')
             if record.get('preference_hash') != self.preference_hash:
                 raise ValueError('Learning preference version differs from behavior')
@@ -368,6 +425,18 @@ class Learner:
                     proofs.append({'path': receipt['ownership_receipt_path'],
                                    'sha256': receipt['ownership_receipt_sha256']})
             observation = record['evidence']
+            economic = observation.get('economic_model')
+            if economic:
+                if digest(economic['path']) != economic['sha256']:
+                    raise ValueError('Economic model snapshot changed')
+                proofs.append({'path': economic['path'], 'sha256': economic['sha256']})
+            from .visual import validate_window
+            validate_window(record['tokens']['visual_window'], observation)
+            for visual in record['tokens']['visual_window']:
+                proofs.extend({'path': crop['path'], 'sha256': crop['sha256']}
+                              for crop in visual.get('object_crops', []))
+                proofs.extend([{'path': visual['path'], 'sha256': visual['sha256']},
+                               {'path': visual['source_path'], 'sha256': visual['source_sha256']}])
             frames = [application] if tactical else application['after_frames']
             for proof in [observation, *frames]:
                 if digest(proof['frame_ref']) != proof['frame_sha256']:
@@ -378,6 +447,22 @@ class Learner:
                 if digest(path) != expected:
                     raise ValueError('Laya decision evidence changed before learning')
                 proofs.append({'path': str(path), 'sha256': expected})
+        # An asynchronous terminal detector can finish after the writer sent
+        # another action. Keep its transport evidence, but never reward that
+        # post-outcome action or carry it into the next wave.
+        excluded = [r for r in records if r.get('decision_domain') == 'combat_tactic'
+                    and r['application']['sent_at_ns'] >= observed]
+        if excluded:
+            _save(self.output / f'boundary-excluded-{uuid.uuid4().hex}.json', {
+                'reason': 'action_not_before_terminal_observation', 'outcome': evidence,
+                'behavior_version': self.version, 'reward_assigned': False,
+                'decisions': [r['decision_id'] for r in excluded], 'files': proofs})
+            excluded_ids = {r['decision_id'] for r in excluded}
+            records = [r for r in records if r['decision_id'] not in excluded_ids]
+        if not records:
+            self.accepted.clear()
+            self.pending.clear()
+            return {'status': 'no_update', 'reason': 'no_choices_before_terminal_observation'}
         if all(len(r['options']) == 1 for r in records):
             self.accepted.clear()
             return {'status': 'no_update', 'reason': 'forced_actions_have_no_policy_gradient'}
@@ -385,7 +470,7 @@ class Learner:
         directory = self.output / ('update-' + update_id)
         directory.mkdir()
         _save(directory / 'dataset-manifest.json', {
-            'schema': 'playmodel.laya-outcome-dataset.v1', 'split': 'train', 'source_version': self.version,
+            'schema': 'playmodel.visual-goal-dataset.v1', 'split': 'train', 'source_version': self.version,
             'files': proofs, 'outcome': evidence,
             'run_ids': sorted(set(r['evidence']['run_id'] for r in records)),
             'decision_domains': sorted(set(r.get('decision_domain', 'menu') for r in records))})
@@ -423,9 +508,21 @@ class Learner:
         accepted = (changed_hash != old_head_hash and encoder_after == self.encoder_hash
                     and all(math.isfinite(k) and k <= 0.03 for k in kls)
                     and all(torch.isfinite(v).all() for v in self._heads().values()))
+        visual_deltas = {}
+        for component in ('encoder', 'temporal', 'project', 'object_encoder', 'object_project'):
+            prefix = 'visual_context.' + component + '.'
+            visual_deltas[component] = math.sqrt(sum(float(
+                (value.detach().double() - before[name].to(value.device).double()).square().sum())
+                for name, value in self.model.named_parameters() if name.startswith(prefix)))
         report = {'schema': 'playmodel.laya-outcome-update.v1', 'source_version': old_version,
                   **self.head_summary(before),
-                  'method': 'head_only_REINFORCE', 'encoder_frozen': True,
+                  'model_schema': 'playmodel.visual-goal.v1',
+                  'graph_hash': self.graph_hash, 'graph_sources': self.graph_sources,
+                  'method': 'visual_context_and_decision_REINFORCE', 'encoder_frozen': True,
+                  'encoder_frozen_scope': 'text_encoder_only', 'visual_encoder_trainable': True,
+                  'visual_component_delta_l2': visual_deltas,
+                  'text_feature_cache': {'hits': self.choice_forward.hits,
+                      'misses': self.choice_forward.misses, 'bytes': self.choice_forward.bytes},
                   'preference_hash': self.preference_hash, 'preferences': self.preferences,
                   'encoder_hash_before': self.encoder_hash, 'encoder_hash_after': encoder_after,
                   'head_hash_before': old_head_hash, 'head_hash_after': changed_hash,
@@ -438,6 +535,8 @@ class Learner:
                   'game_improvement_proven': False, 'calibrated': False}
         report['dataset_manifest_sha256'] = digest(directory / 'dataset-manifest.json')
         bundle = {'base_hash': self.base_hash, 'encoder_hash': self.encoder_hash,
+                  'model_schema': 'playmodel.visual-goal.v1',
+                  'graph_hash': self.graph_hash,
                   'preferences': self.preferences, 'preference_hash': self.preference_hash,
                   'head_hash': changed_hash, 'head': {k: v.detach().cpu().clone() for k, v in self._heads().items()},
                   'report': report}
@@ -474,6 +573,7 @@ def main():
         with redirect_stdout(sys.stderr):
             learner = Learner(args.model, args.output, args.device, args.seed, args.checkpoint)
         protocol.write(canonical({'status': 'ready', 'behavior_version': learner.version,
+                                  'model_schema': 'playmodel.visual-goal.v1',
                                   'checkpoint': learner.checkpoint, 'encoder_hash': learner.encoder_hash,
                                   **learner.head_summary(),
                                   **learner.preference_application}) + '\n')

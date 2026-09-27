@@ -577,6 +577,13 @@ def _definitely_unsent_deadline(attempt, events):
             and event['send_started_at_ns'] <= start <= finish <= event['send_finished_at_ns'])
 
 
+class _ReleasedSceneChange(Exception):
+    """A fresh noncombat frame after release; never permission to send input."""
+    def __init__(self, frame, state):
+        self.frame, self.state = frame, state
+        super().__init__('released recovery observed a scene transition')
+
+
 def _reacquire_combat(stream, background, vision, *, recovery, config, stop_file, directory):
     """Two independent post-release observations; this helper sends no input."""
     target = recovery.get('target_identity')
@@ -608,7 +615,7 @@ def _reacquire_combat(stream, background, vision, *, recovery, config, stop_file
         state = vision.observe(frame.pixels, frame.metadata['sample_width'], frame.metadata['sample_height'],
                                observed_at_ns=observed, alpha_mode='ignore')
         if not state.combat_likely:
-            raise ValueError('released recovery requires two confirmed combat observations')
+            raise _ReleasedSceneChange(frame, state)
         path = directory / f'recovery-combat-{len(sources)}.png'
         path.write_bytes(_png(frame.metadata['sample_width'], frame.metadata['sample_height'], frame.pixels))
         sources.append({'frame_ref': str(path.resolve()), 'frame_sha256': _sha(path),
@@ -963,6 +970,28 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
             final_frame = Frame(last_sequence + 1, {**first.metadata, 'sample_width': width, 'sample_height': height,
                 'capture_started_at_ns': terminal.observed_at_ns, 'capture_finished_at_ns': terminal.observed_at_ns},
                 pixels, terminal.available_at_ns)
+    except _ReleasedSceneChange as transition:
+        # Reuse the normal released-abstention ledger without granting input
+        # authority. The session layer will reacquire the next scene separately
+        # and quarantine the interrupted outcome. No terminal is invented.
+        frame, state = transition.frame, transition.state
+        phase_frame[0] = final_frame = frame
+        phase_rejection[0] = {
+            'status': getattr(state, 'status', 'unknown'), 'combat_likely': False,
+            'hp_fill_fraction': getattr(state, 'hp_fill_fraction', None),
+            'extractor_version': getattr(state, 'extractor_version', None),
+            'rejected_at_ns': time.perf_counter_ns(),
+        }
+        controller = RealtimeController(lambda observation, deadline: None, sink,
+            ControlLimits(int(config.max_frame_age_ms * 1e6), int(config.policy_budget_ms * 1e6),
+                          25_000_000, int(config.input_watchdog_ms * 1e6), 64))
+        published = controller.publish(Observation(frame.sequence, controller.generation,
+            frame.metadata['capture_started_at_ns'], frame.available_at_ns, frame))
+        if not published.accepted:
+            reason, caught = 'runtime_error', 'recovery transition frame expired before handoff'
+        else:
+            reason, caught = 'screen_changed', None
+        controller.disarm(reason)
     except Exception as error:
         reason, caught = 'runtime_error', f'{type(error).__name__}: {error}'
     finally:

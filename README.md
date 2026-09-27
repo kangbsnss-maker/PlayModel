@@ -23,10 +23,17 @@
 
 ## 문서
 
-**Laya 판단 학습:** 로컬 공개 모델이 성장·상점 선택을 담당하고, 확인된 전투 결과로
-판단 head를 갱신하는 별도 실행 경로를 추가했다. 이동 CNN은 고정한다.
-[실행·증거 안내](docs/guides/laya.md), [설계 경계](docs/decisions/0010-local-laya-decisions.md).
+**Laya 판단 학습:** 최근 화면을 읽는 CNN·GRU와 후보별 판단 head를 연결했다.
+실제 전송과 확인된 전투 결과로 시각 문맥·판단 가중치를 갱신하며 텍스트 encoder는 고정한다.
+캐릭터·시작 무기·목표 의도 순환과 UI 관측 대기를 지원한다. 나무·과실의 의미 분류와
+다른 게임에서의 학습 전이 성능은 아직 검증하지 않았다.
+[실행·증거 안내](docs/guides/laya.md), [화면 기반 판단 구조](docs/decisions/0011-visual-situation-decisions.md).
 설치·가중치 갱신을 이동 속도나 게임 실력 향상으로 해석하지 않는다.
+
+현재 앱의 Laya 실행은 객체 주변 crop 학습, 빠른 충돌 회피 중재, 전투 요약을 이용한
+구매 가치 회귀와 UI 전이 최단경로를 함께 사용한다. 기존 CNN PPO와 별도 경로다.
+HP 막대·수집·경계 후보는 관측/추정이며 확인된 처치·획득 보상으로 취급하지 않는다.
+[추가 구조·학습 계약·검증 범위](docs/decisions/0013-combat-economy-implementation.md).
 
 [전체 학습 커리큘럼: 학습판·평가판·예상 시간](docs/guides/learning-curriculum.html). 단계별 구현 상태와 통과 기준, 영상 제목 구분을 포함합니다.
 

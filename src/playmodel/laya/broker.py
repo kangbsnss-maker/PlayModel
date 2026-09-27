@@ -111,7 +111,7 @@ class LayaBroker:
 
 class TacticalSession:
     """Latest-only choices; control receipts are lossless FIFO writer work."""
-    def __init__(self, broker, run_id, *, ttl_ns=1_500_000_000, offer_period_ns=750_000_000):
+    def __init__(self, broker, run_id, *, ttl_ns=1_500_000_000, offer_period_ns=400_000_000):
         self.broker, self.run_id = broker, str(run_id)
         self.ttl_ns, self.offer_period_ns = ttl_ns, offer_period_ns
         self.active = False

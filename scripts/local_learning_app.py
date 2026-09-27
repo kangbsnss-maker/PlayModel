@@ -38,8 +38,9 @@ PHASES = {'initializing': '준비', 'obs_start': 'OBS 실행·연결', 'cycle_st
           'collect_evaluation': '독립 평가 판 수집', 'evaluation_collected': '평가 판 저장 완료',
           'bounded_observation_recovery': '화면 재확인', 'active_run_recovery': '진행 중인 판 마무리',
           'awaiting_game_resume': '게임 재개 대기 · 입력 없이 관측 중',
-          'waiting_observation': '화면 확인 대기 · 입력 없이 관측 중'}
-STATES = {'fault_paused': '오류 기록 확인 필요', 'user_stopped': '사용자 중지',
+          'waiting_observation': '화면 확인 대기 · 입력 없이 관측 중',
+          'waiting_safety': '복구 증거 확인 · UI 관측 유지 · 조작 보류'}
+STATES = {'observing': 'UI 관측 계속', 'fault_paused': '오류 기록 확인 필요', 'user_stopped': '사용자 중지',
           'budget_paused': '실행 예산 종료', 'budget_complete': '요청한 실행 완료',
           'candidate_rejected': '후보 검사 탈락', 'starting': '시작 준비'}
 
@@ -214,7 +215,7 @@ def launch_worker(checkpoint: Path, resume_summary: Path | None, *, resume_lates
         if not (model_dir / 'source-manifest.json').is_file() or not (ROOT / '.venv-laya/Scripts/python.exe').is_file():
             raise ValueError('로컬 Laya 설치가 필요합니다. docs/guides/laya.md를 확인하세요.')
         command = [str(python), '-X', 'utf8', str(ROOT / 'scripts/run_laya_learning.py'),
-                   str(checkpoint.resolve()), '--model-dir', str(model_dir), '--continuous',
+                   str(checkpoint.resolve()), '--model-dir', str(model_dir), '--continuous', '--campaign',
                    '--recover-active-run', '--max-run-seconds', '1800', '--device', 'cuda']
         if resume_latest:
             reports = (ROOT / 'artifacts/laya-learning').glob('*/laya/update-*/report.json')
@@ -293,7 +294,7 @@ class App:
         ttk.Label(frame, textvariable=self.state, font=('Segoe UI', 12, 'bold'), wraplength=720).pack(anchor='w')
         self.details = tk.StringVar()
         ttk.Label(frame, textvariable=self.details, wraplength=720, justify='left').pack(anchor='w', pady=10)
-        ttk.Label(frame, text='창을 닫아도 학습은 계속됩니다. 중지는 위 버튼 또는 F8.\n일시정지·화면 확인 중에는 입력 없이 대기합니다. 안전 관련 오류는 기록 후 중지합니다.',
+        ttk.Label(frame, text='창을 닫아도 학습은 계속됩니다. 중지는 위 버튼 또는 F8.\nUI 변화는 재관측합니다. 전송·해제 상태가 불명확하면 조작만 보류하고 관측을 유지합니다.',
                   wraplength=720).pack(side='bottom', anchor='w')
         self.refresh()
 

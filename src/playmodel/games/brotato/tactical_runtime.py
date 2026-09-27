@@ -36,6 +36,7 @@ class TacticalMovementAction:
     transport_started_at_ns: int | None = None
     receipt: dict | None = None
     held_before: tuple = ()
+    combat_experience: dict = field(default_factory=dict)
 
 
 class TacticalMovementSink(NeuralMovementSink):
@@ -106,6 +107,7 @@ def action_record(packet):
         'signature': packet.situation_signature, 'decision_source': decision,
         'action_origin': 'local_laya' if decision else 'explicit_rule_fallback',
         'fallback_reason': packet.fallback_reason, 'transmitted': True, 'acknowledged': None,
+        'combat_experience': packet.combat_experience,
         'accepted': True, 'successful_transport_reported': True,
         'game_application_verified': False, 'clock_domain': CLOCK,
         'cnn_training_eligible': False, 'legal_mask': packet.legal_mask,
@@ -116,7 +118,7 @@ class TacticalCombatActor:
     """Fast geometry calls only nonblocking broker operations; writer persists proof."""
     action_record = staticmethod(action_record)
 
-    def __init__(self, session, *, planner=None):
+    def __init__(self, session, *, planner=None, economy=None):
         if planner is None:
             from .tactical_state import TacticalPlanner
             planner = TacticalPlanner()
@@ -124,11 +126,16 @@ class TacticalCombatActor:
         self.receipt_refs = {}
         self.ownership_receipt = None
         self.active = False
+        self.economy = economy
+        self.experience = None
 
     def begin_combat(self, session_id):
         self.receipt_refs = {}
         self.ownership_receipt = None
         self.planner.reset()
+        from .combat_experience import CombatExperience
+        self.experience = CombatExperience(self.economy.motion if self.economy else None)
+        self.auxiliary_evidence = self.economy.model_evidence() if self.economy else None
         self.session.begin_combat()
         self.active = True
 
@@ -140,6 +147,15 @@ class TacticalCombatActor:
             observed_at_ns=frame.metadata['capture_started_at_ns'], available_at_ns=frame.available_at_ns,
             build_state=build_state,
             aspect_ratio=frame.metadata['sample_width'] / frame.metadata['sample_height'])
+        experience = self.experience.observe(frame, situation, vision_state) if self.experience else {}
+        if experience.get('valid'):
+            experience['auxiliary_model'] = getattr(self, 'auxiliary_evidence', None)
+            situation['world']['combat_experience'] = experience
+            # Compact summaries preserve room for every legal option in Laya's context.
+            situation['state']['objects_hp_proxy'] = [
+                [obj['track_id'], obj['hp_observation'].get('ratio'), obj['bar_empty_seconds_hypothesis']]
+                for obj in experience['objects'][:2]]
+            situation['state']['blocked_proxy'] = max(experience['movement_not_observed'])
         self.session.offer(frame, situation)
         decision = self.session.resolve(situation, frame)
         now = time.perf_counter_ns()
@@ -150,10 +166,16 @@ class TacticalCombatActor:
             decision = None
         movement = (execute_tactic(decision['action_id'], situation, now_ns=now) if decision is not None
                     else fallback_movement(situation, now_ns=now))
+        override = self.experience.emergency(situation, experience, now) if self.experience else None
+        reason = None if decision else 'no_current_valid_local_choice'
+        if override is not None:
+            movement, reason = override
+            decision = None  # Never credit an unexecuted strategic choice.
         if type(movement) is not int or not 0 <= movement < 9:
             raise ValueError('tactical planner returned invalid movement')
         return TacticalMovementAction(frame, movement, time.perf_counter_ns(),
-            deepcopy(decision), situation['signature'], None if decision else 'no_current_valid_local_choice')
+            deepcopy(decision), situation['signature'], reason,
+            combat_experience=experience)
 
     def record_action(self, packet, record, directory):
         # Recorder thread only, after source pixels and JSONL are durable.
@@ -175,6 +197,8 @@ class TacticalCombatActor:
         with path.open('xb') as stream:
             stream.write(raw)
         self.receipt_refs[packet.execution_id] = (str(path.resolve()), hashlib.sha256(raw).hexdigest())
+        if self.experience is not None:
+            self.experience.record_execution(receipt)
         if record['execution_kind'] == 'native_transition':
             self.ownership_receipt = self.receipt_refs[packet.execution_id]
         if packet.decision is not None:

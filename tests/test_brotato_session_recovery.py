@@ -68,6 +68,13 @@ class RecoverySessionTests(unittest.TestCase):
                          'capture_started_at_ns': now, 'available_at_ns': now}, pixels, 1920, 1080)
 
             capture.read.side_effect = capture_read
+            # Navigation evidence has its own real-file tests; this fixture
+            # isolates focus recovery and deliberately does not create PNGs.
+            nav = Mock()
+            nav.pending = None
+            nav.observe.return_value = True
+            nav.propose.side_effect = lambda scene, start, target, fallback: fallback
+            stack.enter_context(patch('playmodel.learning.ui_navigation.UiNavigationMemory', return_value=nav))
             reader.read.side_effect = lambda source: reports[str(source)]
             combat = (Mock(return_value={'status': 'aborted', 'reason': 'offline_combat_boundary_reached',
                                          'training_performed': False}) if original_combat_frame is not None else

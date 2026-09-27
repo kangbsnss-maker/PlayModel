@@ -174,8 +174,11 @@ class LayaOrchestrationTests(unittest.TestCase):
             fake_cycle = SimpleNamespace(LocalCycle=make_cycle, LocalStatus=Mock(return_value=status))
             with patch.dict(sys.modules, {'run_recurrent_cycle': fake_cycle}), \
                     patch('playmodel.laya.client.LayaClient', return_value=client), \
-                    patch('playmodel.obs.ensure_obs_running'):
+                    patch('playmodel.obs.ensure_obs_running'), \
+                    patch('playmodel.laya.combat_economy.CombatEconomy') as economy:
+                economy.return_value.finish.return_value = {'revision': 1}
                 self.assertEqual(module.run_laya(args, root), 0)
+                economy.return_value.finish.assert_called_once()
             self.assertEqual(checkpoint.read_bytes(), b'fixed combat source')
             self.assertEqual(collected[0][1]['split'], 'train')
             self.assertNotIn('online_factory', constructed[0])

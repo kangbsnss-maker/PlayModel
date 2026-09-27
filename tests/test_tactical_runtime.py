@@ -166,7 +166,10 @@ class TacticalRuntimeTests(unittest.TestCase):
         now = time.perf_counter_ns()
         planner = SimpleNamespace(reset=Mock(), observe=Mock(return_value={
             'signature': 'sig', 'options': {'retreat': 'retreat'},
-            'world': {'valid': True, 'available_at_ns': now, 'fresh_until_ns': now+5_000_000_000}}))
+              'state': {},
+              'world': {'valid': True, 'observed_at_ns': now, 'available_at_ns': now,
+                        'fresh_until_ns': now+5_000_000_000, 'player': [.5,.5],
+                        'tracks': [], 'pickups': [], 'stats': {}}}))
         return TacticalCombatActor(session, planner=planner)
 
     def test_missing_or_stale_whole_request_uses_explicit_fallback(self):

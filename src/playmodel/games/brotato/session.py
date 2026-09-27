@@ -6,7 +6,7 @@ Shop rerolls are bounded exploration, with verified currency deltas in a separat
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
 import re
@@ -172,7 +172,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 style_path: Path | None = None, record: bool = False, edit: bool = True,
                 learning_queue: Path | None = None, run_context: dict | None = None,
                 combat_runner=None, neural_menu=None, observation_recovery=False,
-                observation_gap_callback=None, observation_status_callback=None) -> dict:
+                observation_gap_callback=None, observation_status_callback=None,
+                navigation_ledger: Path | None = None, navigation_learning=True) -> dict:
     if not 1 <= waves <= 10 or not 10 <= seconds <= 600:
         raise ValueError("Bounded session requires 1..10 waves and 10..600 seconds")
     if combat_runner is not None and (checkpoint is not None or learning_queue is not None):
@@ -225,6 +226,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
     menu_reader = MenuOcr(ocr_script, cache_seconds=0 if neural_menu is not None else 2.0)
     menu_capture = MenuCapture(executable)
     recognition_metrics = []
+    from .ui_layers import UiLayers
+    ui_layers = UiLayers()
     fast_model = None
     fast_model_error = None
     model_path = Path(__file__).resolve().parents[4] / 'models/menu/approved.json'
@@ -238,6 +241,13 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             fast_model = MenuClassifier.load(model_path, approval_path=approval_path)
         except (OSError, ValueError, TypeError, KeyError, StopIteration) as error:
             fast_model_error = str(error)
+
+    from playmodel.learning.ui_navigation import UiNavigationMemory
+    scope = hashlib.sha256(json.dumps({'executable': str(Path(executable).resolve()),
+        'build': model_build or str(getattr(getattr(neural_menu, 'recorder', None), 'game_build_id', 'unknown')),
+        'layout': BUTTONS}, sort_keys=True).encode()).hexdigest()
+    navigation_memory = UiNavigationMemory(navigation_ledger or output / 'ui-navigation.jsonl', scope,
+                                          learning=navigation_learning)
 
     def check():
         if stop_file.exists() or stop_latched.is_set():
@@ -256,7 +266,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                         and any(user.key_state(key) & 0x8000 for key in (0x57, 0x41, 0x53, 0x44))):
                     raise OSError('Human intervention during observation recovery')
 
-    def wait_for_observation(phase, shot, *, isolate=True):
+    def wait_for_observation(phase, shot, *, isolate=True, blocked_scene=None, blocked_selection=None):
         nonlocal waiting, resume_gate, wait_started
         if waiting is None:
             if neural_menu is not None and (neural_menu.pending_decision is not None
@@ -271,6 +281,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             target = {key: shot.get(key) for key in ('hwnd', 'pid', 'executable')}
             resume_gate = ObservationResumeGate(target, released)
             waiting = {'phase': phase, 'target_identity': target, 'released_at_ns': released}
+            if blocked_scene is not None:
+                waiting.update(blocked_scene=blocked_scene, blocked_selection=blocked_selection)
             wait_started = time.perf_counter()
             if isolate and observation_gap_callback is not None:
                 observation_gap_callback({'reason': phase, 'target_identity': target,
@@ -367,16 +379,27 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                                          captured_at_ns=shot['capture_started_at_ns']):
                 continue
             if fast is not None:
+                if not navigation_memory.observe(fast.scene, fast.selected, shot):
+                    continue
+                fast = replace(fast, key=navigation_memory.propose(fast.scene, fast.selected, fast.target, fast.key))
                 decision_id = getattr(fast, 'decision_id', None)
                 signature = (fast.scene, fast.selected, fast.target, len(pilots), len(shop_log), decision_id)
                 navigation_visits[signature] = navigation_visits.get(signature, 0) + 1
                 if navigation_visits[signature] > 3:
+                    if observation_recovery:
+                        navigation_visits.clear()
+                        wait_for_observation('waiting_observation', shot,
+                                             blocked_scene=fast.scene, blocked_selection=fast.selected)
+                        continue
                     raise OSError('Repeated menu navigation without progress')
                 check()
                 if time.perf_counter_ns()-shot['capture_started_at_ns'] > 500_000_000:
                     continue
+                if fast.key not in ('left', 'right', 'up', 'down'):
+                    raise ValueError('Fast navigation cannot send confirmation')
                 controller.tap_menu(fast.key)
                 sent_at = time.perf_counter_ns()
+                navigation_memory.sent(fast.scene, fast.selected, fast.key, shot, sent_at)
                 frozen_navigation.sent(sent_at)
                 transition_gate.record(shot['frame_sha256'], fast.key, posted_at_ns=sent_at)
                 from playmodel.execution_log import event
@@ -393,6 +416,14 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     'learned_choice': False})
                 continue
             scene = classify_scene(ocr, width=width, height=height).scene
+            if navigation_memory.pending is not None and scene != navigation_memory.pending['scene']:
+                navigation_memory.observe(scene, None, shot)
+            layer = ui_layers.observe(scene, frame_ref=source,
+                observed_at_ns=shot['capture_started_at_ns'],
+                pending_action=neural_menu is not None and neural_menu.awaiting_application)
+            context['ui_layers'] = layer
+            with (directory / 'ui-layers.jsonl').open('a', encoding='utf8') as layer_log:
+                layer_log.write(json.dumps(layer, ensure_ascii=False) + '\n')
             if scene == 'pause':
                 if resume_gate is not None:
                     resume_gate.previous = None
@@ -407,6 +438,14 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     last_vision = asdict(recovered_vision)
                     if recovered_vision.combat_likely and recovered_vision.player is not None:
                         resume_scene = 'combat'
+                if waiting.get('blocked_scene') == resume_scene:
+                    blocked = waiting.get('blocked_selection')
+                    selected = (selected_button(pixels, width, height, scene=scene).selected_id
+                                if scene in BUTTONS and blocked != 'unsupported' else None)
+                    if selected is None or selected == blocked:
+                        resume_gate.previous = None
+                        wait_for_observation('waiting_observation', shot)
+                        continue
                 proof = resume_gate.observe(shot, scene=resume_scene,
                     available_at_ns=max(shot['available_at_ns'], ocr['available_at_ns']),
                     now_ns=time.perf_counter_ns())
@@ -434,6 +473,10 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     continue
                 if (neural_directive.status == 'unhandled' and scene in ('shop', 'level_up', 'loot')
                         and not recovery_loot):
+                    if observation_recovery:
+                        wait_for_observation('waiting_observation', shot,
+                                             blocked_scene=scene, blocked_selection='unsupported')
+                        continue
                     raise OSError('Neural menu scene unsupported; no rule-based substitution')
             header = ''.join(rows_in_region(ocr,(0,0,1920,90)))
             wave_match = re.search(r'wave\s*(\d{1,3})',header,re.I)
@@ -546,7 +589,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 if pilot['status'] == 'observation_wait':
                     if not observation_recovery or not pilot.get('observation_transition'):
                         raise OSError('Unverified observation transition')
-                    wait_for_observation('waiting_observation', shot, isolate=False)
+                    wait_for_observation('waiting_observation', shot, isolate=False,
+                                         blocked_scene=pilot['observation_transition'].get('blocked_scene'))
                     continue
                 if pilot["training_performed"]:
                     policy = load_checkpoint(Path(pilot["session_directory"]) / "candidate-policy.json")
@@ -566,6 +610,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             elif scene == 'result':
                 reason = 'run_finished'
                 context['result_source'] = str(source)
+                context['result_sha256'] = shot['frame_sha256']
                 context['result_text'] = header
                 break
             elif scene == 'difficulty':
@@ -635,10 +680,17 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     continue
                 focus_acquisition = focus_key == 'left'
             if selection.selected_id is None and not focus_acquisition:
+                if observation_recovery:
+                    wait_for_observation('waiting_observation', shot, blocked_scene=scene)
+                    continue
                 raise OSError("Menu selection is ambiguous; no input")
             target_rect = candidates[target]
+            if not navigation_memory.observe(scene, selection.selected_id, shot):
+                continue
             key = focus_key if focus_acquisition else (
                 "enter" if selection.selected_id == target else navigation_key(selection.rect, target_rect, scene=scene))
+            if not focus_acquisition:
+                key = navigation_memory.propose(scene, selection.selected_id, target, key)
             if scene == 'difficulty' and key == 'enter':
                 label = ''.join(rows_in_region(ocr, (1450,185,1740,245))).casefold()
                 if selection.selected_id != 'danger_6' or 'nightmare' not in label:
@@ -672,6 +724,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             send_started_at_ns = time.perf_counter_ns()
             controller.tap_menu(key)
             sent_at_ns = time.perf_counter_ns()
+            navigation_memory.sent(scene, selection.selected_id, key, shot, sent_at_ns)
             frozen_navigation.sent(sent_at_ns)
             if focus_acquisition:
                 focus_recovery.mark_sent(neural_directive.decision_id)
@@ -765,7 +818,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
     report['menu_recognition_metrics'] = recognition_metrics
     report['menu_model_load_error'] = fast_model_error
     report['shop_reroll_abandoned_waves'] = sorted(shop_reroll_abandoned)
-    report['run_context'] = {**context, 'concept':style['name'],
+    report['run_context'] = {**context, 'concept':context.get('concept') or style['name'],
                              'max_wave_observed':max(observed_waves+[context.get('max_wave_observed') or 0]) or None}
     if recording_report and recording_report.get('output_path'):
         try:
