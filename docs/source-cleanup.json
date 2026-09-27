@@ -1,0 +1,134 @@
+{
+    "schema_version":  1,
+    "status":  "completed",
+    "completed_at_utc":  "2026-09-26T14:58:18.2799757Z",
+    "authorization":  "User requested all research images be used, then deleted after project preparation.",
+    "pre_delete_verification":  "PREPARATION_VERIFIED",
+    "verified_tests":  21,
+    "preservation_scope":  "Substantive research content, equations, parameters and references preserved in Markdown; original visual layout is not retained. Hashes are provenance, not image backups.",
+    "deletion_method":  "Explicit literal paths in PowerShell, no wildcard or recursion.",
+    "preserved_as":  [
+                         "docs/research/page-notes.md",
+                         "docs/research/source-manifest.json",
+                         "docs/research/sources.md",
+                         "docs/research/review.md"
+                     ],
+    "deleted_sources":  [
+                            {
+                                "filename":  "분석 출력 1.png",
+                                "sha256":  "ca076d796493d614b8c381e237b1fca8da684d746b2b4c35a0fd78ac675e494f"
+                            },
+                            {
+                                "filename":  "분석 출력 2.png",
+                                "sha256":  "c2adbd69c0a01b38c974e4ba4f56e7957ad9346b4ce70575cc132217305fc114"
+                            },
+                            {
+                                "filename":  "분석 출력 3.png",
+                                "sha256":  "2362bdcd5ffcab0cd4b57b1a1720b65f9ee4d7342733f429b66957352ceed502"
+                            },
+                            {
+                                "filename":  "분석 출력 4.png",
+                                "sha256":  "36f259697addd3e7fda767ea167db6c16a33c5978c35cc453c4d5ad4644a4990"
+                            },
+                            {
+                                "filename":  "분석 출력 1 (1).png",
+                                "sha256":  "674b730cda5f8d7b055c02336631f4a9c5e2ab776a46fc2d8381d80fc24bf0db"
+                            },
+                            {
+                                "filename":  "분석 출력 2 (1).png",
+                                "sha256":  "1ecc7a9930548b8f3de2e53515ed0ce1abfaf6543016c1d96094f9b3c918ac4d"
+                            },
+                            {
+                                "filename":  "분석 출력 3 (1).png",
+                                "sha256":  "8031d0d5d2373c2bd13615a958f4edd860a85367c35900fa8eba4c27cba18fb1"
+                            },
+                            {
+                                "filename":  "분석 출력 4 (1).png",
+                                "sha256":  "449cc1002a06cb32e1b3c8403aa4a7c8e1d01dc72ac818caa89547bb46c63a61"
+                            },
+                            {
+                                "filename":  "분석 출력 1 (2).png",
+                                "sha256":  "631b9a52059deea75c6303f2832032d0afca442f03dee9b4e1096bda2ce29a2c"
+                            },
+                            {
+                                "filename":  "분석 출력 2 (2).png",
+                                "sha256":  "c77d603060479c95e67bb4f248b2ecc1f571da920d6a62e08372e46b633fee0a"
+                            },
+                            {
+                                "filename":  "분석 출력 3 (2).png",
+                                "sha256":  "3b766595feb6304c3645e4f1b2f1e3868597edb542f7bfd0e7f5d94a49eb8595"
+                            },
+                            {
+                                "filename":  "분석 출력 4 (2).png",
+                                "sha256":  "37602cc7f7db4ca0642d0898cada2b65512b5fbf40718e0ba7ad245e2c2a0aeb"
+                            },
+                            {
+                                "filename":  "분석 출력 1 (3).png",
+                                "sha256":  "552b5ea9c2ae0f8e6746e171f6ba28bf646dd01b1d8a9ddfa316969fbd4a4c53"
+                            },
+                            {
+                                "filename":  "분석 출력 2 (3).png",
+                                "sha256":  "4891b66523b950e1c29e54e1a0577f59a7939bbb685cffcc87e0c12e6d120d1c"
+                            },
+                            {
+                                "filename":  "분석 출력 3 (3).png",
+                                "sha256":  "97aaab7dddbcc642a1b6f6093a7aa2e9cabdbf793964d5536a7fbba8ba0361f8"
+                            },
+                            {
+                                "filename":  "분석 출력 4 (3).png",
+                                "sha256":  "0d9fcd339d27d701aa153235bbe3e4a6db87c68e8ab9f56e1bbc99f74f449e63"
+                            },
+                            {
+                                "filename":  "분석 출력 1 (4).png",
+                                "sha256":  "22ea611f54c17fc08e174eb3e1934e7ccc12ce69d485d8df25a1cfda7f405500"
+                            },
+                            {
+                                "filename":  "분석 출력 2 (4).png",
+                                "sha256":  "c4a46f405d1fe3d8ba6255b6e68cca144fb0bb43204aadb29b77d6303f1d2082"
+                            },
+                            {
+                                "filename":  "분석 출력 3 (4).png",
+                                "sha256":  "f8ef2df663d28c6af8150438af4ab34fc14d93c320313e4822bf65e662d6371d"
+                            },
+                            {
+                                "filename":  "분석 출력 4 (4).png",
+                                "sha256":  "7043e41d20837930bb989fd8b9c8ace684f95c2195ebed210b37ff8e6e713d04"
+                            },
+                            {
+                                "filename":  "분석 출력 1 (5).png",
+                                "sha256":  "efac948c03fc4ad8fafc7eba654e08af6c19045b79cba4e65d60639c18ff1aeb"
+                            },
+                            {
+                                "filename":  "분석 출력 2 (5).png",
+                                "sha256":  "6ee55662f68d88279139135850bf98caea72a0b54f293a12b7522cc8d8542b3a"
+                            },
+                            {
+                                "filename":  "분석 출력 3 (5).png",
+                                "sha256":  "cebcf063fd406affb0216809206ca696ee68f405d52e41958321514867a37e3a"
+                            },
+                            {
+                                "filename":  "분석 출력 4 (5).png",
+                                "sha256":  "43709f7905432f573a81b130010e71c70e118e314565ce948d10eb67c62e5602"
+                            },
+                            {
+                                "filename":  "분석 출력 1 (6).png",
+                                "sha256":  "40bcba6076ddf621ce1b81ba49e33d7536228a3432b8d0b148dcd4861c6f7aee"
+                            },
+                            {
+                                "filename":  "분석 출력 2 (6).png",
+                                "sha256":  "5456e2df2f5a53e6b3708a07aa982a3ac63ce70e501ff09ed00fc4a9aec75203"
+                            },
+                            {
+                                "filename":  "분석 출력 3 (6).png",
+                                "sha256":  "8afbc373b6736e29a04089a6ddb0ca528682810803f32072df41c42ab499897d"
+                            },
+                            {
+                                "filename":  "분석 출력 4 (6).png",
+                                "sha256":  "732c69a0d46ff165ee4ccc75da72dea8df03218dfaa51fb791eb8dcf57beb320"
+                            },
+                            {
+                                "filename":  "분석 출력 5.png",
+                                "sha256":  "94eaedb6f2dbb07a981cf2d43e3794c67e40349548f7d5a8477e06ef1a788014"
+                            }
+                        ]
+}

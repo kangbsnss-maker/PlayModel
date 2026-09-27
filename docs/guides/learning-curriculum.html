@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlayModel 전체 학습 커리큘럼 · 판 수와 예상 시간</title>
+<style>
+body{font:16px/1.7 system-ui,sans-serif;color:#192529;background:#f5f4ef;margin:0;padding:36px 22px}
+main{max-width:1200px;margin:auto}h1{font-size:32px;line-height:1.3}h2{margin-top:36px}
+.note{background:#fff;border-left:4px solid #267563;padding:18px 22px}.table{overflow-x:auto}
+table{border-collapse:collapse;width:100%;background:white;font-size:15px}th,td{padding:13px 15px;border-bottom:1px solid #d9dfda;text-align:left;vertical-align:top}th{background:#e6ece7}td:nth-child(2),td:nth-child(3),td:nth-child(4),td:nth-child(5){white-space:nowrap}code{overflow-wrap:anywhere}a{color:#166453}
+</style>
+<main>
+<p>PlayModel · 2026-09-27 · 로컬 Brotato</p>
+<h1>전체 학습 커리큘럼</h1>
+<p class="note"><strong>초기 예산: 학습 400–800판 + 평가 1,100–1,900판 = 총 1,500–2,700판.</strong><br>
+완료를 예측한 수치가 아니라, 첫 실험을 운영하고 결과에 따라 재계획할 예산이다. 현재는 S00 실행 검증과 기초 정책 실험 단계다. HP·회복·목표물 등의 미구현 기능은 오래 실행해도 자동으로 추가되지 않는다.</p>
+<p><strong>한 판:</strong> 새 캐릭터 설정부터 최종 사망 또는 승리 결과까지. 한 웨이브는 한 판이 아니다. 오류·중간 진입 복구는 별도 기록하며 정상 완료 학습·평가 판 수에서 제외한다.</p>
+<div class="table"><table>
+<thead><tr><th>단계</th><th>학습판</th><th>평가판</th><th>총 플레이</th><th>예상 가동시간*</th><th>현재 구현·통과 기준</th></tr></thead>
+<tbody>
+<tr><td>S00 반복 실행·기초 생존 성장</td><td>10–20</td><td>20–40</td><td>30–60판</td><td>약 3–7시간</td><td>연결 구현. 최근 20판에서 사람 개입 없이 결과·재시작, 입력·기록 정합 확인. 현재 보상은 웨이브 +1, 사망 −1.</td></tr>
+<tr><td>S01 생존·회피 기초</td><td>40–80</td><td>120–200</td><td>160–280판</td><td>약 14–29시간</td><td>픽셀 CNN+GRU/PPO 기준선 구현. 같은 조건의 고정 모델 비교에서 생존시간·도달 웨이브 개선 확인. 움직임 자체를 보상하지 않음.</td></tr>
+<tr><td>S02 HP·피해·회복</td><td>40–80</td><td>120–200</td><td>160–280판</td><td>약 14–29시간</td><td>추가 개발 필요. 현재/최대 HP 변화 구분, 실제 피해·회복과 행동 연결, 회복물 접근 위험 평가. 접촉·투사체 피해 원인은 별도 증거로 구분.</td></tr>
+<tr><td>S03 처치·레벨업·나무·목표물</td><td>80–160</td><td>200–360</td><td>280–520판</td><td>약 25–54시간</td><td>추가 개발 필요. 적·투사체·회복물·나무 추적, 처치·획득·경험치·레벨 변화 검증. 접근만으로 가짜 획득 보상을 주지 않음.</td></tr>
+<tr><td>S04 빌드·상점·리롤</td><td>80–160</td><td>200–360</td><td>280–520판</td><td>약 25–54시간</td><td>성장 선택·구매·리롤·전리품 행동 연결. 아이템 효과 해석과 빌드 평가 보강 필요. 구매 횟수보다 이후 전투 성적으로 평가.</td></tr>
+<tr><td>S05 캐릭터·무기·난이도 확장</td><td>150–300</td><td>340–640</td><td>490–940판</td><td>약 44–99시간</td><td>현재 시작 조건은 고정 규칙. 선택 정책 학습·조합별 평가 추가 필요. 목표 난이도 6 유지. 낮은 난이도 실험 결과를 6단계 성과로 대체하지 않음.</td></tr>
+<tr><td>S06 최종 독립 검증</td><td>0</td><td>100</td><td>100판</td><td>약 9시간</td><td>가중치 고정. 미사용 세션·조건에서 승리 여부·승률·중단률 확인. 사망까지 정상 진행한 것을 게임 클리어로 표시하지 않음.</td></tr>
+<tr><th>합계</th><th>400–800</th><th>1,100–1,900</th><th>1,500–2,700판</th><th>약 130–280시간</th><th>개발·오류 수정·영상 편집 시간 제외. 미통과 시 추가 예산 재산정.</th></tr>
+</tbody></table></div>
+<p>* 표의 시간은 <strong>평균 한 판 5분 + 학습 사이클당 준비·갱신·저장 1–4분</strong>을 가정한 계획값이다. 각 행은 반올림했다. 현재 완료한 세 판은 각각 125.54·125.73·130.42초였으며, 이처럼 이른 사망이 이어지면 전체 초기 예산은 약 60–150시간이다. 평균 10분까지 살아남으면 약 260–510시간으로 늘어난다. 목표 실력에 도달할 판 수는 아직 측정할 학습 곡선이 없다.</p>
+<h2>평가판이 포함된 계산</h2>
+<p>현재는 학습 1판마다 기존 모델 1판·후보 1판을 평가한다. S01–S05의 승급 때는 모델을 고정하고 기존 모델 20판·후보 20판을 추가한다. 마지막에는 미사용 조건 100판을 평가한다. 따라서 통상 평가 800–1,600판 + 승급 평가 200판 + 최종 평가 100판이다. 평가 자료는 PPO 학습에 넣지 않는다.</p>
+<p>단계별 판 수에 도달해도 자동 합격하지 않는다. 관측 정확성·출처·시각 정합을 먼저 확인하고 독립 성능 평가와 이전 단계 퇴행 검사를 통과해야 한다. 서로 다른 후보의 점수를 합쳐 한 모델의 성적으로 계산하지 않는다. 실패한 평가로 튜닝했다면 새 평가 세트를 사용한다. 후속 단계의 관측·보상 및 자동 승급기는 아직 모두 구현된 상태가 아니다.</p>
+<h2>실제 실행 상태</h2>
+<p>첫 전체 비교는 완료했다. 학습판 746개 전이·48회 가중치 갱신 뒤, 수정된 실행 조건에서 기존 모델 798개·후보 876개 전이를 각각 새 판부터 사망까지 평가했다. 두 모델 모두 2웨이브 종료로 실력 향상은 입증되지 않았다. 이후 새 학습판·가중치 갱신·평가가 로컬에서 이어진다.</p>
+<h2>영상 제목</h2>
+<p><code>S00-기초생존성장__학습판__Brotato__캐릭터__Nightmare__Wave-3__세션ID.mp4</code></p>
+<p>역할은 <strong>학습판 / 기준모델평가 / 후보모델평가 / 복구-학습평가제외 / 시작조건설정-학습아님</strong>으로 구분한다. HP·회복 학습이 연결되기 전에 해당 제목을 붙이지 않는다. 제목은 수행 중인 단계이며 습득 완료 표시가 아니다.</p>
+<p>종료된 영상에 제목이 들어간 파일명을 추가한다. 원본 경로를 보존하는 같은 파일의 하드 링크이므로 영상 용량을 복제하지 않는다. <code>media/learning-videos.html</code>에서 제목별로 열 수 있다. 각 폴더의 <code>learning-title.json</code>에는 실행 근거와 원본 경로를 남긴다. 녹화 중인 파일은 변경하지 않는다.</p>
+<p><a href="standalone-learning.html">수동 실행·중지 가이드</a> · <a href="local-neural-learning.md">구현과 실측 기록</a></p>
+</main></html>

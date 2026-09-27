@@ -1,0 +1,21 @@
+[build-system]
+requires = ['setuptools>=68']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'playmodel'
+version = '0.1.0.dev0'
+description = 'Local autonomous game learning with optional human corrections'
+readme = 'README.md'
+requires-python = '>=3.11'
+dependencies = []
+
+[project.optional-dependencies]
+obs = ['websocket-client==1.9.2']
+learning = ['torch==2.7.1', 'numpy==2.2.6']
+
+[project.scripts]
+playmodel = 'playmodel.execution_log:cli_main'
+
+[tool.setuptools.packages.find]
+where = ['src']

@@ -1,0 +1,28 @@
+{
+  "name": "offensive",
+  "stat_weights": {
+    "ranged_damage": 20,
+    "attack_speed": 18,
+    "armor": 5,
+    "max_hp": 4,
+    "hp_regeneration": 6,
+    "speed": 5,
+    "life_steal": 5,
+    "dodge": 5,
+    "harvesting": 4,
+    "damage": 15,
+    "crit_chance": 12,
+    "luck": 1,
+    "melee_damage": 0,
+    "elemental_damage": 0,
+    "engineering": 0
+  },
+  "behavior": {
+    "avoidance_radius": 0.13
+  },
+  "shop": {
+    "max_rerolls_per_wave": 1,
+    "reserve": 50,
+    "max_budget_fraction": 0.1
+  }
+}

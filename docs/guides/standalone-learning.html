@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PlayModel 로컬 학습 실행 가이드</title>
+<style>body{max-width:850px;margin:55px auto;padding:0 24px;background:#f6f5f1;color:#242a30;font:17px/1.8 system-ui,sans-serif}h1{font-size:34px;line-height:1.3}h2{margin-top:38px;font-size:23px}code{font-size:14px;background:#e7e9e6;padding:2px 6px;border-radius:4px}pre{white-space:pre-wrap;background:#e7e9e6;padding:18px;border-radius:8px;font-size:14px}a{color:#135d80}.note{border-left:4px solid #257a68;padding:14px 20px;background:#e8f0eb}li{margin:8px 0}table{border-collapse:collapse;width:100%}td,th{text-align:left;border-bottom:1px solid #cdd2ce;padding:12px}</style>
+<h1>PlayModel<br>로컬 자체 학습 실행 가이드</h1>
+<p>대화창과 에이전트를 닫아도 실행 중인 로컬 프로그램은 플레이·수집·학습·평가를 이어갑니다. 정상 실행에 GPT/API 토큰은 필요하지 않습니다. PC와 게임·OBS는 켜져 있어야 합니다.</p>
+<div class="note"><strong>시작:</strong> 프로젝트 폴더의 <code>PlayModel.vbs</code> 더블 클릭 → <strong>학습 시작 / 이어서</strong>.<br><strong>중지:</strong> 프로그램의 <strong>안전 중지</strong> 또는 <strong>F8</strong>. 창을 닫는 것만으로는 학습을 중지하지 않습니다.</div>
+<h2>1. 실행 전</h2>
+<ol><li>Brotato와 OBS를 실행합니다. 게임 화면은 검증된 영어·1920×1080 설정을 유지합니다.</li>
+<li>OBS 장면은 <code>PlayModel - Brotato</code>, 게임 캡처 소스는 <code>PlayModel - Brotato Game</code>. 게임 화면이 실제로 잡히는지 확인합니다. 다른 녹화·방송이 진행 중이면 먼저 정리합니다.</li>
+<li><code>PlayModel.vbs</code>를 실행합니다. 현재 PC에는 학습 환경과 모델이 준비돼 있습니다. 모델·원본 자료는 로컬에 보관하며 Git에 포함하지 않습니다.</li></ol>
+<p>VBS 실행을 지원하지 않는 PC에서는 <code>.venv\Scripts\pythonw.exe</code>로 <code>scripts\local_learning_app.py</code>를 실행할 수 있습니다. 다른 PC는 Python 환경·PyTorch 및 모델 파일을 별도로 준비해야 합니다.</p>
+<h2>2. 시작과 이어서</h2>
+<p><strong>시작 모델</strong>은 최초 학습에 쓸 <code>.pt</code> 파일입니다. <strong>중단된 비교 기록</strong>은 이미 학습한 후보의 평가만 재개할 때 쓰는 선택 항목입니다. 이 PC의 기존 학습 기록이 연결돼 있습니다.</p>
+<p><strong>학습 시작 / 이어서</strong>를 누르면 가장 최근 실행 상태를 우선 복원합니다. 끝낸 학습을 같은 자료로 무작정 반복하지 않고, 저장된 후보와 아직 완료하지 못한 평가부터 이어갑니다. 중지 파일은 사용자가 이 버튼을 눌렀을 때만 해제합니다.</p>
+<p>모델 구조를 바꾸거나 별도 실험을 시작할 때는 <strong>저장된 진행 이어서</strong>를 해제합니다. 이전 상태를 삭제하지 않고 새 폴더에 시작합니다. 시작 후에는 이어하기가 다시 기본값이 됩니다. 스탯 입력을 추가한 모델은 기존 모델에서 가중치를 옮긴 별도 실험이며, 기존 비교 기록을 새 모델의 평가로 둔갑시키지 않습니다.</p>
+<p>이미 진행 중인 판이면 확인 가능한 화면에서 남은 판을 마무리한 뒤 새 판을 시작합니다. 중간부터 이어받은 판은 처음부터 수집한 완전한 학습·평가 판으로 계산하지 않습니다. 캐릭터 선택부터 최종 사망·결과까지가 한 판이며, 웨이브 종료는 중간 단계입니다.</p>
+<h2>3. 프로그램이 반복하는 일</h2>
+<p><a href="learning-curriculum.html">전체 학습 커리큘럼: 단계별 학습판·평가판·예상 시간</a>. 아직 구현하지 않은 학습 기능과 현재 단계를 구분합니다.</p>
+<p><strong>학습 목표:</strong> 현재 능력치·보유 무기·잔액·판매 상품을 보고 구매, 리롤, 출발 중 유리한 행동을 찾습니다. 이어지는 전투에서는 강화된 캐릭터로 적 접촉과 투사체를 피하며 적 처치·레벨업·생존을 늘립니다. 상점 선택과 전투 결과를 연결해 배우는 것이 목표이며, 구매나 리롤 횟수 자체를 성과로 보상하지 않습니다.</p>
+<ol><li>고정 모델로 새 판 플레이. 전투 이동, 지원되는 능력치·상점 선택과 실제 입력·결과 기록.</li>
+<li>판이 끝나면 원본·관측 시각·행동 확률·결과를 고정된 기록으로 확정.</li>
+<li>적격 학습 판으로 별도 로컬 PPO 작업자를 준비하고, 게임은 고정된 기존 모델로 새 평가판 진행. 첫 실제 이동 입력이 기록되면 PPO 최적화를 시작. 판 도중에는 모델을 바꾸지 않음.</li>
+<li>기존 모델 평가가 끝나면 학습 결과를 확인하고 후보를 새 판에서 평가. 평가 자료는 PPO 학습에 넣지 않음.</li>
+<li>비교 기록을 저장하고 다음 실험 사이클 진행. 후보를 반복 사용하더라도 배포 승인이나 실력 향상 증명을 뜻하지 않음.</li></ol>
+<p>짧은 비교는 게임 난수의 영향을 받습니다. 손실 감소·가중치 변경만으로 회피 능력이나 강화 전략이 좋아졌다고 판단하지 않습니다. 과거 화면은 시각 사전학습에 재사용할 수 있지만, 과거 AI 출력을 사람 정답으로 바꾸지는 않습니다.</p>
+<p>상점 상품은 웨이브와 리롤마다 달라집니다. 검증은 각 행동 직전·직후에만 적용하며, 이전 웨이브와 같은 상품을 요구하지 않습니다. 리롤도 비용을 쓰는 선택 행동입니다. 구매는 상품 제거·재고 변화, 리롤은 상품 변경·보유품 유지·비용 차감으로 결과를 구분합니다. 잔액을 읽지 못하면 값을 추정하지 않고 구매·리롤을 제한하되, 확인된 출발 행동은 허용합니다.</p>
+<h2>4. 중지·오류·재시작</h2>
+<table><tr><th>상태</th><th>동작</th></tr><tr><td>정상 실행</td><td>에이전트 호출 없이 계속 반복합니다.</td></tr><tr><td>회복 가능한 중단</td><td>제한된 횟수로 관측·진행을 복구합니다. 실패한 판의 원본은 보존하고 평가 점수에서 제외합니다.</td></tr><tr><td>알 수 없는 화면·입력 오류</td><td>입력을 해제하고 진단 기록을 남깁니다. 확인되지 않은 구매 키를 반복하거나 코드 자체를 임의 수정하지 않습니다.</td></tr><tr><td>사용자 중지·실행 예산</td><td>상태를 저장하고 멈춥니다. 시작 버튼으로 다시 이어갑니다.</td></tr></table>
+<p>토큰이 소진돼도 정상 로컬 학습은 계속됩니다. 다만 새로운 코드 오류를 자동으로 고치는 기능은 없습니다. 복구 범위를 벗어난 오류는 수정 후 다시 시작해야 합니다. 절전·재부팅·게임 종료 상태에서는 학습할 수 없습니다. Windows 로그인 자동 시작은 설정하지 않았습니다.</p>
+<p>전리품은 로컬 모델의 <strong>획득 / 재활용</strong> 후보로 처리합니다. 실제 선택 표시와 입력 후 독립 관측으로 적용을 검증합니다. 중간부터 이어받은 판은 여전히 학습·평가에서 제외합니다. 전리품 행동을 추가하기 전 기록은 별도 실행 계약으로 보존하며 새 규칙의 PPO 데이터로 바꾸지 않습니다. 아이템 효과를 모두 이해하거나 이득을 보장한다는 뜻은 아닙니다.</p>
+<h2>5. 기록 위치</h2>
+<p>영상 제목 목록은 <code>media/learning-videos.html</code>입니다. 시작 버튼은 별도의 로컬 제목 기록기도 실행합니다. 종료된 영상만 학습판·평가·복구·시작 설정으로 표시하며 원본을 보존합니다. 수동으로는 <code>.venv\Scripts\python.exe scripts\label_learning_videos.py --watch</code>를 실행합니다. 제목 기록기만 중지하려면 <code>artifacts/VIDEO_TITLES_STOP</code> 파일을 만듭니다. 게임 입력에는 관여하지 않습니다.</p>
+<p>각 Python 실행은 <code>artifacts/program-logs/시각-PID-식별자-프로그램/</code>에 별도 기록합니다. 실행 창의 <strong>실행 로그</strong> 버튼으로 열 수 있습니다. 이전 실행을 덮어쓰거나 자동 삭제하지 않습니다.</p>
+<ul><li><code>execution.json</code>: 프로그램·인자·Python 환경·PID·부모 실행·시작/종료·종료 코드·마지막 단계.</li>
+<li><code>events.jsonl</code>: 단계 전환, 자식 실행, 오류와 traceback. 환경 변수 전체를 수집하지 않으며 알려진 비밀 인자는 가립니다.</li>
+<li><code>stdout.log</code>, <code>stderr.log</code>: 출력과 오류. 캡처 worker의 바이너리 화면 스트림은 복제하지 않습니다.</li>
+<li><code>children/windows_ocr.ps1-*.stderr.log</code>: 별도 OCR 프로세스의 오류 출력. 부모 이벤트에 시작·종료 PID와 해당 경로를 연결합니다. 캡처 프로세스를 정상 정리하며 강제 종료한 경우도 부모 이벤트에 종료 사유와 코드를 남깁니다.</li>
+<li><code>fatal.log</code>: Python이 잡을 수 있는 치명적 오류의 스택.</li>
+<li><code>diagnosis.json</code>: 종료 시 자동 생성하는 관측 오류·마지막 단계·관련 상태 파일·출력 끝부분 요약. 원인을 추측해 확정하지 않습니다.</li></ul>
+<p>별도 진단: <code>.venv\Scripts\python.exe scripts\diagnose_programs.py --limit 10</code>. 게임을 조작하거나 외부 API를 호출하지 않고 최근 로그를 읽습니다. 강제 종료·전원 차단은 종료 기록이 없을 수 있으며, <code>running</code>만 남았다고 실제 실행 중으로 단정하지 않습니다. 실행 파일 자체의 구문 오류나 Python 환경 부재처럼 기록기 시작 전 실패는 부모 실행 출력도 확인해야 합니다. 외부 게임·OBS 자체의 내부 로그를 이 기록기가 대신 생성하지는 않습니다.</p>
+<ul><li><code>artifacts/recurrent-cycles/실행폴더/status.json</code>: 실행 상태. 생존 신호와 실제 게임 진행 시각은 별도입니다.</li>
+<li><code>artifacts/recurrent-cycles/실행폴더/session-state.json</code>: 중단 후 복원할 단계·학습 후보·평가 기록.</li>
+<li><code>artifacts/recurrent-cycles/실행폴더/training-jobs/</code>: 별도 학습 작업의 고정 요청·상태·결과·로그. 실제 학습과 전투의 중첩은 시간 기록으로 확인합니다.</li>
+<li><code>help-request.json</code>: 오류와 수정 필요 사항. 외부 에이전트를 자동 호출하지 않습니다.</li>
+<li><code>artifacts/local-learning/worker-*.log</code>: 프로그램 출력·오류.</li>
+<li><code>media/captures/</code>: 원본 녹화. 데이터·모델·영상은 자동 삭제하지 않습니다.</li>
+<li><code>configs/local/learner-launch.json</code>: 이 PC의 모델·비교 기록 경로.</li></ul>
+<h2>현재 범위</h2>
+<p>현재 PPO 보상은 웨이브 진행·최종 사망 등 확인된 결과 중심입니다. 적 처치·경험치 획득·접촉 피해·투사체 피해를 각각 정확히 판별해 보상하는 경로는 아직 연결되지 않았습니다. 목표 전체가 구현·검증됐다는 뜻은 아닙니다.</p>
+<p>CNN+GRU와 PPO로 전투·지원되는 성장·상점 선택을 연결했습니다. 실제 전체 판 679개 전이로 학습·모델 저장·재로드를 확인했습니다. 새 모델은 화면 외에 표시된 주스탯 16개와 확인된 보유 무기 정보를 입력받습니다. 두 실제 관측이 일치한 숫자만 사용하고, 관측 시각과 미확인 표시를 함께 전달합니다. 전투 중 임시 버프나 현재 HP의 정확한 값으로 단정하지 않습니다.</p>
+<p>추가된 입력 연결은 0 초기화이므로 새 경험으로 학습해야 판단에 영향을 줍니다. 캐릭터·시작 무기는 아직 초기 규칙이며, 모든 아이템 효과·보상 화면·해금 조건을 학습하는 완성형 모델은 아닙니다. 접촉 피해와 투사체 피해를 각각 구분하는 평가, 장기 실력 향상 검증도 남아 있습니다.</p>
+<p>자세한 구현·실측은 <a href="local-neural-learning.md">로컬 신경망 학습 문서</a>에 기록합니다.</p>
+</html>

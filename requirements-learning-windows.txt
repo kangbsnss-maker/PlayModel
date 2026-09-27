@@ -1,0 +1,13 @@
+# Validated on GTX 1660 SUPER / Windows / CUDA runtime 12.6.
+# Install explicitly; the preparation CLI does not require these dependencies.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.7.1+cu126
+numpy==2.2.6
+filelock==4.0.4
+fsspec==2026.9.0
+jinja2==3.1.6
+markupsafe==3.0.3
+mpmath==1.3.0
+networkx==3.7
+sympy==1.14.0
+typing-extensions==4.16.0

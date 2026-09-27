@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "profile_id": "brotato-full-run-draft",
+  "game": {
+    "title": "Brotato",
+    "genre": "survivor-like",
+    "platform": "pc",
+    "task": "autonomous_character_weapon_selection_combat_growth_shop_and_run_result"
+  },
+  "adapter": {"capture": null, "input": null, "reset": null},
+  "observation": {
+    "width": 320,
+    "height": 180,
+    "policy_hz": 10,
+    "clock": "monotonic_ns",
+    "preprocess_version": "rgb-letterbox-v1-proposed"
+  },
+  "action": {"spec_version": "brotato-actions-v1-draft", "buttons": [], "axes": []},
+  "control": {
+    "start_disarmed": true,
+    "human_priority": true,
+    "neutral_on_fault": true,
+    "watchdog_timeout_ms": 250
+  },
+  "evaluation": {"protocol_id": null, "success_rule": null, "reset_rule": null, "holdout_unit": "session"}
+}

@@ -1,0 +1,108 @@
+{
+  "schema_version": "draft-1",
+  "record_kind": "survivor_card_run_template",
+  "usable_for_training": false,
+  "notice": "Manual capture contract example. Not an executable game profile, recorder output or validated training dataset. Null means unknown. Replace the example only with observed facts.",
+  "run": {
+    "run_id": null,
+    "game_title": null,
+    "game_build": null,
+    "platform": null,
+    "language": null,
+    "character": null,
+    "stage": null,
+    "difficulty": null,
+    "meta_progression_snapshot_ref": null,
+    "initial_build_snapshot_ref": null,
+    "seed_if_exposed": null,
+    "movement_controller": null,
+    "movement_policy_version_if_ai": null,
+    "observation_access": null,
+    "objective": null,
+    "recording_ref": null,
+    "time_reference": null,
+    "game_rules_version": null
+  },
+  "decisions": [
+    {
+      "decision_id": null,
+      "offer_id": null,
+      "parent_offer_id_if_rerolled": null,
+      "observed_at_relative_ms": null,
+      "available_at_relative_ms": null,
+      "offer_screenshot_ref": null,
+      "state_before": {
+        "snapshot_observed_at_relative_ms": null,
+        "snapshot_available_at_relative_ms": null,
+        "level": null,
+        "game_time_or_wave": null,
+        "current_hp": null,
+        "maximum_hp": null,
+        "resources": null,
+        "owned_items_and_upgrade_levels": null,
+        "stat_snapshot_ref": null,
+        "active_effects_if_observed": null,
+        "constraints_if_verified": null,
+        "free_slots": null,
+        "reroll_or_skip_resources_if_supported": null,
+        "unknown_fields": []
+      },
+      "offered_candidates": [
+        {
+          "slot": null,
+          "card_id_if_verified": null,
+          "raw_title": null,
+          "raw_effect_text": null,
+          "rarity_if_present": null,
+          "upgrade_level_if_present": null,
+          "normalized_effects_if_verified": null,
+          "selectable": null,
+          "roi": null,
+          "extractor_version": null,
+          "confidence_score": null,
+          "status": "unreviewed"
+        }
+      ],
+      "choice": {
+        "source": null,
+        "action_kind": null,
+        "selected_slot": null,
+        "selected_card_id_if_verified": null,
+        "policy_version_if_ai": null,
+        "selection_probability_if_logged_by_policy": null,
+        "human_reason_if_recorded": null,
+        "human_reason_recorded_at_relative_ms": null,
+        "human_reason_timing": "unknown",
+        "human_reason_usage": "review_only",
+        "selected_at_relative_ms": null
+      },
+      "application": {
+        "status": "unknown",
+        "confirmed_at_relative_ms": null,
+        "evidence_screenshot_ref": null,
+        "owned_items_and_upgrade_levels_after": null,
+        "observed_changes": null
+      },
+      "followup_events": [],
+      "review": {
+        "label_version": null,
+        "reviewer": null,
+        "status": "unreviewed",
+        "eligible_for_bc": false,
+        "exclusion_reason": "Template contains no verified observations."
+      }
+    }
+  ],
+  "outcome": {
+    "status": "unknown",
+    "success": null,
+    "survival_game_time_ms": null,
+    "progress_or_bosses": null,
+    "damage_metrics_if_available": null,
+    "death_or_stop_reason": null,
+    "result_screenshot_ref": null,
+    "interventions": null,
+    "movement_controller_changes": null,
+    "final_build_snapshot_ref": null
+  }
+}

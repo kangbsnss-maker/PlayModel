@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "review_date_kst": "2026-09-27",
+  "checked_at_utc": "2026-09-26T15:22:49.3231564Z",
+  "repository": "https://github.com/tscmoo/pluto",
+  "head_commit": "d41f473aeebafcfc90e28527b57324656c0ffca1",
+  "default_branch": "main",
+  "tree_truncated": false,
+  "tree_files": [{"path": "README.md", "type": "blob", "size": 5296}],
+  "github_detected_license": null,
+  "releases": [
+    {
+      "tag": "cog2026-2578600",
+      "url": "https://github.com/tscmoo/pluto/releases/tag/cog2026-2578600",
+      "asset_name": "pluto-cog2026-2578600.zip",
+      "asset_bytes": 285549634
+    },
+    {
+      "tag": "beta-2247200",
+      "url": "https://github.com/tscmoo/pluto/releases/tag/beta-2247200",
+      "asset_name": "pluto-beta-2247200.zip",
+      "asset_bytes": 1019339019
+    }
+  ],
+  "evidence_endpoints": [
+    "https://api.github.com/repos/tscmoo/pluto",
+    "https://api.github.com/repos/tscmoo/pluto/commits/main",
+    "https://api.github.com/repos/tscmoo/pluto/git/trees/d41f473aeebafcfc90e28527b57324656c0ffca1?recursive=1",
+    "https://api.github.com/repos/tscmoo/pluto/releases"
+  ],
+  "limits": [
+    "Main branch tree and published release metadata inspected; release archives not downloaded or audited.",
+    "No game or Pluto binary executed; performance and training claims remain author reports.",
+    "Null GitHub license metadata is not a legal assessment of any release archive. No reuse permission inferred.",
+    "This snapshot records observations at the stated commit and time, not future repository contents."
+  ]
+}

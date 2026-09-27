@@ -1,0 +1,75 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PlayModel — 전체 게임 학습 모델 논의</title><meta name="description" content="Pluto, AlphaStar, 재귀 PPO, DreamerV3 비교와 로컬 게임 학습 모델 설계 논의"><style>
+:root{--paper:#f5f3ed;--ink:#1d2d35;--muted:#54666c;--line:#d5dcd7;--accent:#17675b;--tint:#e5efe8}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:30px}body{margin:0;background:var(--paper);color:var(--ink);font-family:"Segoe UI","Malgun Gothic",sans-serif;line-height:1.85;word-break:keep-all}a{color:var(--accent);text-underline-offset:4px}button{font:inherit;cursor:pointer;border:1px solid var(--line);border-radius:5px;padding:7px 14px;background:white;color:var(--ink)}button:hover{background:var(--tint)}button:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:3px solid #bf7625;outline-offset:4px}.shell{max-width:1440px;margin:auto;display:grid;grid-template-columns:255px minmax(0,1fr);gap:65px;padding:45px 50px 90px}aside{align-self:start;position:sticky;top:35px}.brand{font-weight:800;letter-spacing:2px;font-size:16px}.edition{color:var(--muted);font-size:12px;margin:8px 0 35px}nav a{display:block;text-decoration:none;color:var(--muted);font-size:13px;padding:12px 0;border-bottom:1px solid var(--line)}nav span{display:inline-block;width:27px;font-size:11px;color:var(--accent)}.aside-note{margin-top:28px;font-size:12px;color:var(--muted)}main{min-width:0}.eyebrow{font-size:11px;letter-spacing:2px;font-weight:700;color:var(--accent)}header{padding:0 0 32px;border-bottom:2px solid var(--ink)}h1{font-size:clamp(32px,3.8vw,53px);line-height:1.3;letter-spacing:-2px;margin:20px 0}h2{font-size:27px;line-height:1.45;letter-spacing:-1px;margin:8px 0 24px}.lead{font-size:18px;max-width:700px;color:var(--muted)}.status{display:inline-block;border:1px solid var(--accent);padding:3px 10px;font-size:12px;color:var(--accent);border-radius:3px}.hero-note{background:var(--tint);padding:22px 26px;border-left:4px solid var(--accent);margin:28px 0}.hero-note p{margin:4px 0}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0}.flow div{padding:18px 14px;background:#fff;border-top:3px solid var(--accent)}.flow b{display:block;font-size:14px}.flow small{display:block;color:var(--muted);font-size:12px;margin-top:6px}.flow em{font-style:normal;color:var(--accent);font-size:11px}section{padding:40px 0 20px;border-top:1px solid var(--line);margin-top:25px}p{font-size:15px;margin:18px 0}strong{color:#123c34}code{font-size:.9em;background:#e6e9e4;padding:2px 5px;border-radius:3px}.table-tools{display:flex;gap:15px;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:12px;color:var(--muted)}.table-tools button{font-size:12px}.table-scroll{overflow-x:auto;border:1px solid var(--line);background:#fff}table{width:100%;min-width:650px;border-collapse:collapse;font-size:13px;line-height:1.8}th,td{text-align:left;vertical-align:top;padding:19px 18px;border-bottom:1px solid var(--line)}thead{background:var(--ink);color:#fff}thead th:first-child{width:20%}tbody th{font-weight:700}tbody tr:last-child>*{border-bottom:0}tr.recommended{background:var(--tint)}.tag{display:block;font-size:10px;color:var(--accent);margin-top:7px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0)}[hidden]{display:none!important}.glossary{margin:26px 0}details{border-bottom:1px solid var(--line);padding:12px 0}summary{cursor:pointer;font-size:14px;font-weight:600}details p{font-size:13px;color:var(--muted);margin:10px 0}footer{border-top:2px solid var(--ink);padding-top:20px;margin-top:45px;color:var(--muted);font-size:12px}.print{margin-top:25px;font-size:12px}
+@media(max-width:1000px){.shell{grid-template-columns:190px minmax(0,1fr);gap:30px;padding:30px}.flow{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.shell{display:block;padding:24px 20px}aside{position:static}.edition{margin-bottom:15px}nav{display:flex;gap:8px;overflow:auto;margin-bottom:26px}nav a{flex:0 0 auto;padding:6px;font-size:12px}nav span,.aside-note,.print{display:none}h1{letter-spacing:-1px}.lead{font-size:16px}.table-tools{align-items:flex-start}section{padding-top:28px}.hero-note{padding:18px}p{font-size:14px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+@media print{body{background:white}.shell{display:block;padding:0;max-width:none}aside,.table-tools button{display:none}.flow{grid-template-columns:repeat(4,1fr)}section{break-inside:auto}.table-scroll{overflow:visible}table{min-width:0}tr{break-inside:avoid}tr[hidden]{display:table-row!important}header{break-after:avoid}h2{break-after:avoid}a{color:inherit}details p{display:block}footer{font-size:10px}}
+</style></head><body>
+<div class="shell"><aside><div class="brand">PLAYMODEL</div><div class="edition">설계 논의 문서 · 2026.09.27</div><nav aria-label="문서 목차"><a href="#section-1"><span>01</span>현재 구현과 목표</a>
+<a href="#section-2"><span>02</span>비교</a>
+<a href="#section-3"><span>03</span>권장 논의안</a>
+<a href="#section-4"><span>04</span>속도·기억과 학습의 분리</a>
+<a href="#section-5"><span>05</span>자체 검증과 모델 교체</a></nav><p class="aside-note">로컬 실행 · 전체 판 학습<br>모델 선택 전 비교와 검증</p><button class="print" type="button" onclick="window.print()">인쇄 / PDF 저장</button></aside>
+<main><header><div class="eyebrow">MODEL DESIGN DISCUSSION</div><h1>게임 전체를 배우는<br>모델은 어떻게 만들까?</h1><p class="lead">현재 이동 모델에서 전체 게임 판단으로.<br>Pluto·AlphaStar·PPO·DreamerV3를 같은 목표에서 비교합니다.</p><span class="status">주력 구조 채택 · 성능 검증 진행</span></header>
+<div class="hero-note"><div class="eyebrow">권장 비교 순서</div><p><strong>공유 화면 인코더 + GRU 기억 + PPO</strong>를 주력 구조로 채택했습니다.</p><p>현재 선형 정책을 기준선으로 유지하고, DreamerV3는 후속 비교군으로 둡니다. 구현 완료나 실력 향상을 뜻하지 않습니다.</p></div>
+<div class="flow" aria-label="제안하는 전체 판 학습 흐름"><div><em>01 · 관측</em><b>화면과 현재 상태</b><small>체력·장비·후보·관측 신뢰도</small></div><div><em>02 · 기억과 판단</em><b>상황에 맞는 행동</b><small>이동·무기·성장·구매</small></div><div><em>03 · 결과 확인</em><b>실제로 바뀌었는가</b><small>입력 전송과 적용 결과 분리</small></div><div><em>04 · 학습과 평가</em><b>한 판의 경험으로 개선</b><small>별도 판에서 비교 후 모델 교체</small></div></div>
+<div class="glossary" aria-label="용어 설명"><details><summary>OCR · 화면의 글자를 읽는 기능</summary><p>이미지의 ‘가격 20’을 문자와 숫자로 바꾸는 기능입니다. 읽었다고 효과를 이해했거나 모델이 학습된 것은 아닙니다.</p></details><details><summary>GRU · 최근 상황을 기억하는 신경망</summary><p>현재 화면만 보는 대신 이전 관측과 행동의 정보를 이어받습니다. 어떤 정보를 잘 기억하는지는 학습과 검증이 필요합니다.</p></details><details><summary>PPO · 행동 결과로 정책을 개선하는 학습 방법</summary><p>직접 행동해서 얻은 경험으로 다음 행동의 확률을 조정합니다. 업데이트가 과하게 변하지 않도록 제어하지만, 성공을 보장하지는 않습니다.</p></details><details><summary>World model · 행동 뒤의 상황을 예측하는 모델</summary><p>경험에서 다음 상태와 보상을 예측하도록 학습합니다. Dreamer는 그 예측 안에서도 행동을 연습합니다. 예측 오류가 실제 판단을 망칠 수 있어 별도 검증이 필요합니다.</p></details></div>
+<p>2026-09-27. 사용자가 권장 주력 구조인 공유 화면 인코더 + GRU + PPO를 채택했다. <a href="../decisions/0006-recurrent-ppo-and-replay.md">채택 결정과 데이터 재사용 경계</a>. 학습 완료·게임 실력 향상은 별도 검증 대상이다. 중요 설계 검토: gpt-6-astra / ultra. 기존 <a href="../decisions/0004-local-state-and-self-evaluation.md">ADR 0004</a>의 로컬 실행·관측 출처·독립 평가 경계를 유지한다.</p>
+<section id="section-1"><div class="eyebrow">DISCUSSION / 01</div><h2>현재 구현과 목표</h2>
+<p>기존 기준선은 선형 softmax + REINFORCE다. 새 공유 CNN+GRU 모델은 기존 화면 1,939장으로 시각 사전학습을 수행했고, 실제 전투에서 수집한 44개 전이로 PPO 가중치 갱신·저장·재로드를 통과했다. 실력 향상은 아직 검증하지 않았다. <a href="../guides/local-neural-learning.md">실제 측정과 실행 경계</a>.</p>
+<p>메뉴 인식용 작은 분류기는 별도 지도학습 모델이다. 현재 실게임 실험의 규칙 기반 성장 선택·상점 갱신은 전체 게임 전략 학습이 아니다. 나무 식별·파괴·드랍·획득을 연결하는 검증 경로도 아직 없다.</p>
+<p>목표는 적 접촉·적 투사체를 피하고, 강화 방법을 스스로 찾는 것이다. 캐릭터 선택부터 해당 판의 최종 종료까지 관측·행동·적용 결과를 연결하고, 전투·무기·성장·구매 선택이 장기 성과를 통해 개선되는 로컬 프로그램을 만든다. 에이전트 없이 플레이·수집·학습·평가가 실행되어야 한다. 한 웨이브·녹화 구간·학습 작업이 끝났다고 한 판이 끝난 것으로 취급하지 않는다.</p>
+</section>
+<section id="section-2"><div class="eyebrow">DISCUSSION / 02</div><h2>비교</h2>
+<div class="table-tools"><span>같은 목표, 다른 학습 방식</span><button id="filter" type="button" aria-pressed="false">우선 검토 후보만 보기</button></div><div class="table-scroll" tabindex="0" role="region" aria-label="학습 모델 비교표"><table><caption class="sr-only">모델별 강점과 적용 한계</caption><thead><tr>
+<th scope="col">후보</th>
+<th scope="col">학습 방법·강점</th>
+<th scope="col">PlayModel 적용 한계</th>
+</tr></thead><tbody>
+<tr data-candidate="false" class="">
+<th scope="row">현재 선형 REINFORCE</th>
+<td>작은 정책, 로컬 수집·가중치 갱신의 검증 기준</td>
+<td>시각 표현·시간 기억·장기 빌드 상호작용 부족. 최종 목표 모델로 부족</td>
+</tr>
+<tr data-candidate="false" class="">
+<th scope="row">Pluto</th>
+<td>제작자 설명상 하나의 신경망으로 Brood War 전 종족 macro/micro, 자가 대전 RL</td>
+<td>BWAPI 연동. 공개 배포판은 실행물·가중치이며 학습 소스·세부 알고리즘·현재 PC에서의 신경망 재학습을 확인할 수 없음</td>
+</tr>
+<tr data-candidate="false" class="">
+<th scope="row">AlphaStar</th>
+<td>사람 리플레이 학습과 league 기반 다중 에이전트 RL, 시간 기억·구조화된 행동</td>
+<td>SC2 전용 입력/행동 환경. 규모·학습 환경을 로컬 화면 게임에 그대로 복사할 수 없음</td>
+</tr>
+<tr data-candidate="true" class="recommended">
+<th scope="row">재귀 PPO 기반 모델<span class="tag">첫 비교 후보</span></th>
+<td>화면 인코더+시간 기억+행동/가치 출력. 실제 경험에서 정책 갱신 폭을 제어</td>
+<td>PPO 자체가 화면 인식·게임 의미·장기 인과관계를 해결하지 않음. 화면 기반 단일 실시간 게임의 수집량 병목 존재</td>
+</tr>
+<tr data-candidate="true" class="">
+<th scope="row">DreamerV3</th>
+<td>경험으로 다음 상태·보상을 예측하는 world model을 학습하고 상상 rollout에서 정책 개선</td>
+<td>구현·연산·메모리 및 모델 오차 관리 필요. 현 장비에서 성능·학습 효율 우위 미검증</td>
+</tr>
+</tbody></table></div>
+<p>1차 근거: <a href="https://github.com/tscmoo/pluto">Pluto 공식 README</a>, <a href="https://deepmind.google/blog/alphastar-grandmaster-level-in-starcraft-ii-using-multi-agent-reinforcement-learning/">AlphaStar 공식 설명</a>, <a href="https://arxiv.org/abs/1707.06347">PPO 원 논문</a>, <a href="https://www.nature.com/articles/s41586-025-08744-2">DreamerV3 원 논문</a>.</p>
+<p>Pluto 공개판의 상대별 opening bandit 승패 기록 갱신은 신경망 가중치 재학습과 다르다. 제작자가 제시하는 CPU 추론 시간은 우리의 화면 캡처·OCR·입력 지연 측정치가 아니다. Brotato의 자체 플레이는 대전 상대가 있는 self-play와 구분한다.</p>
+</section>
+<section id="section-3"><div class="eyebrow">DISCUSSION / 03</div><h2>권장 논의안</h2>
+<p>채택한 주력 구조는 <strong>공유 화면 인코더 + GRU 시간 기억 + 단계별 행동 출력 + PPO</strong>다. 신경망 코어와 제한된 전투 학습을 구현했다. 이동·후보 선택이 같은 현재 빌드와 판의 기억을 사용하되, 메뉴 종류별로 가능한 행동만 출력한다. 캐릭터·무기·성장·구매·건너뛰기 전체를 이 구조에 연결하는 작업과 독립 성능 평가가 남아 있다.</p>
+<p>화면 글자/OCR·아이콘·숫자·장비 상태는 출처·시각·unknown 표시를 갖는 보조 관측이다. OCR은 이미지 속 글자를 문자열로 바꾸는 기능이며, 글자를 읽었다고 효과를 이해했거나 가중치가 학습된 것은 아니다. 능력치 숫자가 오른 것과 정책 실력이 오른 것도 별도로 평가한다.</p>
+<p>나무는 화면에서 객체와 변화의 특징을 학습하고 장기 성과에 따른 행동을 학습할 수 있는 대상이다. 단, 현재 검출되지 않는 나무에 보상을 임의로 주지 않는다. 객체 추적·파괴·드랍·획득의 검증과 보상 중복 방지 또는 더 일반적인 시각 표현 학습을 비교한다. 모든 게임 지식을 몇 판 만에 습득한다는 보장은 없다.</p>
+<p>후보별 의미 특징과 현재 빌드를 결합할 때 단순 선형 <code>state + candidate</code> 점수는 후보 공통 state 항이 softmax에서 상쇄된다. 비교용 작은 정책에도 교차 특징이 필요하며, 주력 신경망에는 공유 상태와 후보의 상호작용을 표현해야 한다.</p>
+<p>현재 확인 장비는 Ryzen 5 3600XT, RAM 약 32 GiB, GTX 1660 SUPER 6144 MiB VRAM이다. 작은 재귀 PPO부터 자원·처리량을 측정하고 DreamerV3를 같은 정보 조건의 후속 비교군으로 둔다. 이는 장비 제약에 따른 설계 판단이며 학습 성공/속도 보장이 아니다.</p>
+</section>
+<section id="section-4"><div class="eyebrow">DISCUSSION / 04</div><h2>속도·기억과 학습의 분리</h2>
+<p>알려진 메뉴의 이름·위치·화면 서명을 저장하면 매번 재탐색할 필요가 없다. 현재 배치와 포커스를 최신 화면으로 확인한 뒤 이동한다. 메뉴 기억은 가중치 학습과 별개이고, 신규 해금·배치 변화·언어·해상도 변경 때 재검증해야 한다.</p>
+<p>고정 2초 대기를 목표로 삼지 않는다. 기존 2.5초는 입력용 관측 만료 기준이다. 최종 읽기 전용 측정에서 기존 두 번 캡처+80ms 방식 중앙값 675.9ms, 상주 작업자 방식 205.0ms였다. 새 방식도 요청 이후 두 프레임을 확인하되 프로세스 재실행과 첫 프레임 PNG 저장을 제거하고 무손실 PNG 압축 수준을 낮춘다. 기존 3회·신규 예열 제외 5회, 실행 중 게임의 서로 다른 화면/부하에서 측정했으므로 고정 배속 향상을 보장하지 않는다. 전체 선택 지연이나 학습 성능 개선 수치도 아니다. 증거는 로컬 artifacts/menu-capture-benchmark/report.json이며 공개 데이터에 포함하지 않는다.</p>
+</section>
+<section id="section-5"><div class="eyebrow">DISCUSSION / 05</div><h2>자체 검증과 모델 교체</h2>
+<p>정책이 예상한 성공률을 정답으로 쓰지 않는다. 관측 실패·중단·사망·목표 달성을 구분하고, 입력 전송과 실제 적용 증거를 분리한다. 자기 행동은 RL 경험이지 BC 정답이 아니다.</p>
+<p>전체 판의 모델 버전·데이터 manifest를 고정한다. 후보와 기존 모델을 동일 캐릭터·난이도 조건의 별도 판에서 비교하고, 학습에 쓰지 않은 평가 기록으로 승격 여부를 결정한다. 시드 고정이 지원되지 않으면 같은 시드 비교를 주장하지 않는다. 오류율·진행도·승률·지연·자원 사용을 같이 보고하며, 결과 표본이 부족하면 보류한다. 한두 번의 승리나 가중치 변경만으로 개선을 선언하지 않는다.</p>
+<p>GitHub에는 코드·재현 설정·검사·모델 설명을 준비한다. 모델 가중치를 공개할 때는 학습 출처·허용 범위·검증 결과와 배포 방법을 별도로 정한다. 게임 파일·세이브·원본 영상·민감정보를 저장소에 넣지 않는다.</p>
+</section><footer>원문: <a href="model-comparison.md">model-comparison.md</a> · 외부 서비스 없이 열리는 단일 HTML 문서.<br>출처와 측정 조건은 본문에 보존했습니다. 학습 모델의 성능 달성 보고가 아닙니다.</footer></main></div>
+<script>const filter=document.getElementById('filter');filter?.addEventListener('click',()=>{const active=filter.getAttribute('aria-pressed')!=='true';filter.setAttribute('aria-pressed',String(active));filter.textContent=active?'모든 모델 보기':'우선 검토 후보만 보기';document.querySelectorAll('tr[data-candidate]').forEach(row=>row.hidden=active&&row.dataset.candidate!=='true');});window.addEventListener('beforeprint',()=>document.querySelectorAll('details').forEach(d=>{d.dataset.wasOpen=String(d.open);d.open=true;}));window.addEventListener('afterprint',()=>document.querySelectorAll('details').forEach(d=>d.open=d.dataset.wasOpen==='true'));</script></body></html>
