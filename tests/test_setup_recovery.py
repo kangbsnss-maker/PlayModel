@@ -10,6 +10,54 @@ from playmodel.games.brotato import setup_run
 
 
 class SetupRecoveryTests(unittest.TestCase):
+    def test_nonwrapping_weapon_rows_finish_scan_and_return_to_preferred_card(self):
+        for names in (['Fist'],['Fist','Hand'],['Fist','Rock','Hand']):
+            with self.subTest(names=names),tempfile.TemporaryDirectory() as temp:
+                root=Path(temp)
+                phases=iter(['character',*names,*([names[-1]]*3),*reversed(names[:-1]),'difficulty'])
+                active={'ns':1_000_000_000,'phase':None}
+                clock=lambda:active['ns']
+                pixels=bytes([255])*(1920*1080*4)
+                def capture(directory,**kwargs):
+                    active['phase']=next(phases)
+                    active['ns']+=400_000_000
+                    target=root/str(clock());target.mkdir()
+                    return {'session_directory':str(target),'hwnd':1,
+                            'frame_sha256':f'{clock():064x}','capture_started_at_ns':clock()},pixels,1920,1080
+                def rows(_,rect):
+                    phase=active['phase']
+                    if rect==(500,60,1450,160):
+                        return [{'character':'Characterselection','difficulty':'Difficultyselection'}.get(phase,'')]
+                    if rect==(20,20,300,100):return ['Back']
+                    if rect==(1290,180,1520,220):return [phase]
+                    if rect in ((210,175,975,280),(415,170,1180,265)):return ['Brawler']
+                    if rect==(520,285,975,690):return ['+5MaxHP']
+                    if rect==(1200,180,1880,690):return ['+5MaxHP'] if phase=='Fist' else ['Damage:1']
+                    return []
+                cap,reader=MagicMock(),MagicMock()
+                cap.__enter__.return_value.read.side_effect=capture
+                reader.__enter__.return_value.read.return_value={}
+                gate=setup_run.MenuTransitionGate(clock=clock)
+                with patch.object(setup_run,'MenuCapture',return_value=cap), \
+                     patch.object(setup_run,'MenuOcr',return_value=reader), \
+                     patch.object(setup_run,'MenuTransitionGate',return_value=gate), \
+                     patch.object(setup_run,'time',SimpleNamespace(perf_counter_ns=clock)), \
+                     patch.object(setup_run,'session_lock',return_value=nullcontext()), \
+                     patch.object(setup_run,'rows_in_region',side_effect=rows), \
+                     patch.object(setup_run,'classify_scene',return_value=SimpleNamespace(scene='unknown')), \
+                     patch.object(setup_run,'recognize_main_menu',return_value=False), \
+                     patch.object(setup_run,'locked_character',return_value=None), \
+                     patch.object(setup_run,'focused_tile',return_value=2), \
+                     patch.object(setup_run,'BackgroundController') as controller:
+                    result=setup_run.prepare_next(root/'game',root=root,character_slot=2,weapon='@rotate:0',record=False)
+                self.assertIsNone(result['error'],result)
+                self.assertTrue(result['context']['setup_complete'])
+                self.assertFalse(result['context']['weapon_scan_complete'])
+                self.assertEqual(result['context']['weapons'],['Fist'])
+                self.assertEqual(result['context']['observed_weapon_names'],names)
+                self.assertEqual([c.args[0] for c in controller.return_value.tap_menu.call_args_list],
+                                 ['enter']+['right']*len(names)+['left']*(len(names)-1)+['enter'])
+
     def test_locked_character_is_observed_twice_then_left_without_enter(self):
         phases=iter(['locked','locked','character','weapon','difficulty'])
         active={}

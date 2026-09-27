@@ -215,18 +215,30 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                             continue
                         raise OSError('Weapon page character mismatch')
                     character_mismatch_observations=0
+                    scan_stalled=False
                     if weapon_move is not None:
                         previous_name, posted_at = weapon_move
                         if name == previous_name:
                             # Arrows are asynchronous too. Never call a stale card a cycle.
                             if time.perf_counter_ns()-posted_at < 1_000_000_000:
                                 continue
-                            # Some characters have one available starting weapon.
-                            # Select the observed card only, with incomplete coverage explicit.
-                            if len(weapon_names)==1 and preferred_weapon is None:
-                                preferred_weapon=name
+                            # A non-wrapping row can end after any number of
+                            # weapons. Keep the observed subset, not an assumed
+                            # full scan or a fatal navigation error.
+                            if name and name in weapon_profiles:
+                                scan_stalled=True
                                 context['weapon_scan_complete']=False
-                                context['weapon_scan_reason']='only_one_observed_after_navigation_wait'
+                                context['weapon_scan_reason']='unchanged_card_after_navigation_wait'
+                                context.setdefault('weapon_navigation_limits',[]).append({
+                                    'weapon':name,'frame_ref':str(source),
+                                    'frame_sha256':shot['frame_sha256'],
+                                    'observed_at_ns':shot['capture_started_at_ns'],
+                                    'posted_at_ns':posted_at,'full_coverage_verified':False})
+                                if preferred_weapon is not None:
+                                    # Returning to a preferred card can fail too.
+                                    # Select this fresh, readable available card.
+                                    context['unreachable_preferred_weapon']=preferred_weapon
+                                    preferred_weapon=name
                             else:
                                 raise OSError('Weapon navigation did not change observed selection')
                         weapon_move=None
@@ -241,7 +253,7 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                     rotation_match = rotating and len(weapon_names) > int(weapon.split(':', 1)[1])
                     if rotating and context.get('traits'):
                         cycle_complete = repeated and len(weapon_names)>1 and name==weapon_names[0]
-                        if preferred_weapon is None and (cycle_complete or len(weapon_names)>=12):
+                        if preferred_weapon is None and (cycle_complete or len(weapon_names)>=12 or scan_stalled):
                             offset=int(weapon.split(':',1)[1]) % len(weapon_names)
                             order=weapon_names[offset:]+weapon_names[:offset]
                             preferred_weapon=max(order,key=lambda n:affinity(context['traits'],' '.join(weapon_profiles[n]['text'])))
