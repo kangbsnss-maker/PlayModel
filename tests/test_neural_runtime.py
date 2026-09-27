@@ -43,7 +43,7 @@ class NeuralRuntimeTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         torch.manual_seed(13)
         self.model = RecurrentActorCritic(ModelConfig(hidden_size=16, visual_size=16, candidate_hidden_size=8))
-        self.state = SimpleNamespace(count=0, stop=False, menu=False, releases=0, mutate=None)
+        self.state = SimpleNamespace(count=0, stop=False, menu=False, releases=0, mutate=None, requests=[])
 
     def tearDown(self):
         self.temp.cleanup()
@@ -84,6 +84,10 @@ class NeuralRuntimeTests(unittest.TestCase):
             def close(self):
                 pass
 
+            def request_fresh(self, after_ns):
+                assert state.count > 0, 'capture requests follow only actual transmissions'
+                state.requests.append(after_ns)
+
         class Background:
             def __init__(self, *args):
                 pass
@@ -108,7 +112,7 @@ class NeuralRuntimeTests(unittest.TestCase):
         return dict(stream_factory=Stream, background_factory=Background, vision_factory=Vision)
 
     def run_trial(self, *, steps=4, terminal=None, split='train', policy_budget_ms=500,
-                  first_action_callback=None):
+                  first_action_callback=None, online_session=None, initial_hidden=None, reset_first=None):
         entry = self.evidence('combat')
         config = PilotConfig(max_seconds=4, max_steps=steps, policy_budget_ms=policy_budget_ms,
                              max_frame_age_ms=1000, input_watchdog_ms=1000, terminal_wait_seconds=1,
@@ -117,6 +121,7 @@ class NeuralRuntimeTests(unittest.TestCase):
         return run_neural_trial(self.root / 'fake.exe', self.root / 'trials', model=self.model,
                                 combat_entry=entry, config=config, terminal_observer=callback,
                                 chunk_steps=2, burn_in=2, split=split,
+                                online_session=online_session, initial_hidden=initial_hidden, reset_first=reset_first,
                                 first_action_callback=first_action_callback, **self.factories())
 
     def test_training_gate_receives_first_real_action_once_from_recorder_thread(self):
@@ -172,6 +177,8 @@ class NeuralRuntimeTests(unittest.TestCase):
         self.assertFalse(report['game_application_verified'])
         self.assertFalse(report['training_performed'])
         self.assertGreater(self.state.releases, 0)
+        actual_rows = [json.loads(line) for line in (Path(report['session_directory']) / 'actions.jsonl').read_text().splitlines()]
+        self.assertEqual(self.state.requests, [row['sent_at_ns'] for row in actual_rows])
         flat = load_rollout(report['flat_rollout_path'])
         states = torch.load(report['initial_states_path'], weights_only=True)['initial_states']
         self.assertEqual(tuple(flat.images.shape[:2]), (5, 1))

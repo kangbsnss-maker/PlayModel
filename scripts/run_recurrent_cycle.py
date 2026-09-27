@@ -85,6 +85,7 @@ class LocalStatus:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self._heartbeat_error = None
+        self.online_provider = None
         self.interval = interval_seconds
         self.state = {"process_id": os.getpid(), "status": "starting", "phase": "initializing",
                       "automatic_agent_call": False, "needs_agent_help": False,
@@ -125,8 +126,9 @@ class LocalStatus:
     def _heartbeat(self):
         while not self.stop.wait(self.interval):
             try:
-                self.update(progress=False)
-            except OSError as error:
+                online = self.online_provider() if self.online_provider else None
+                self.update(progress=False, **({'online_learning': online} if online is not None else {}))
+            except (OSError, ValueError, RuntimeError) as error:
                 # A persistent background write error remains visible even if
                 # its cause clears before the next foreground progress update.
                 with self.lock:
@@ -509,16 +511,32 @@ class LocalCycle:
                     'available_at_ns': proof_time, 'verified_at_ns': proof_time,
                     'origin': 'verified_initial_weapon_setup'})
         menus = NeuralMenuController(recorder, output_directory=directory / "macro-actions", seed=self.seed)
+        online = None
+        if split == 'train' and not partial and getattr(self, 'online_factory', None):
+            online = self.online_factory(recorder, checkpoint=checkpoint, root=self.root,
+                output=directory / 'online', device=self.device, seed=self.seed, stop_file=self.stop_file)
+
+            def online_progress():
+                snapshot = {**online.snapshot(), 'run_id': run_id}
+                callback = getattr(self, 'online_progress', None)
+                if callback:
+                    callback(snapshot)
+                return snapshot
+
+            if self.status:
+                self.status.online_provider = online_progress
         trials, segments = [], []
         death_evidence = None
         started = time.perf_counter()
 
         def combat_runner(executable, output_root, *, policy=None, config, **kwargs):
-            nonlocal death_evidence
+            nonlocal death_evidence, recorder
             kwargs.pop("vision_factory", None)
             first_action = self._training_combat_callback(run_id=run_id, split=split, tag=tag, partial=partial)
             if first_action is not None:
                 kwargs['first_action_callback'] = first_action
+            if online is not None:
+                kwargs['online_session'] = online
             if self.status:
                 self.status.update(phase="combat", recorded_transitions=len(recorder.records))
             result = run_neural_trial(executable, output_root, model=recorder.model,
@@ -528,6 +546,22 @@ class LocalCycle:
                 split=split, chunk_steps=32, burn_in=8, **kwargs)
             trials.append(result)
             result["training_performed"] = False
+            if online is not None:
+                recorder = online.recorder
+                if menus.pending_decision is not None or menus.awaiting_application:
+                    raise ValueError('online model cannot change across an unresolved menu decision')
+                menus.recorder = recorder
+                if result.get('terminal_kind') == 'death':
+                    death_evidence = json.loads((Path(result['session_directory']) / 'terminal.json').read_text(encoding='utf-8'))
+                accepted = (result.get('reason') in ('terminal_wave_clear', 'terminal_death')
+                            and result.get('online_collection_eligible') is True and not result.get('error'))
+                if not accepted:
+                    recorder.invalidate('online combat rejected: ' + str(result.get('reason')))
+                result['status'] = 'neural_rollout_ready' if accepted else 'aborted'
+                if self.status:
+                    self.status.update(phase='menu', online_learning=online_progress(),
+                                       last_combat_outcome=result.get('terminal_kind'))
+                return result
             if not result.get("rollout_eligible") or not result.get("flat_rollout_path"):
                 recorder.invalidate("combat segment rejected: " + str(result.get("reason")))
                 result["status"] = "aborted"
@@ -572,7 +606,15 @@ class LocalCycle:
                 if recorder.rejection_reasons or report["reason"] not in ("wave_limit", "segment_limit", "menu_limit"):
                     failure = "session stopped: " + str(report["reason"])
                     break
-            if death_evidence is not None and not recorder.rejection_reasons:
+            if online is not None:
+                online.close()
+                frozen = {'schema': 'playmodel.online-run.v1', 'training_eligible': False,
+                          'full_run_complete': bool(death_evidence is not None and not recorder.rejection_reasons),
+                          'online_learning': online_progress(), 'steps': sum(row.get('steps', 0) for row in trials),
+                          'note': 'versioned fragments train independently; aggregate is not a fixed-policy PPO trajectory'}
+                if not frozen['full_run_complete']:
+                    stop_category = 'user_stop' if self.stop_file.exists() else 'runtime_error'
+            elif death_evidence is not None and not recorder.rejection_reasons:
                 frozen = recorder.finish(directory / "trajectory", kind="death", evidence=death_evidence)
             elif partial and verified_result:
                 frozen = recorder.abort(directory / 'trajectory', 'partial history ended at verified result; no death label inferred')
@@ -585,7 +627,15 @@ class LocalCycle:
             exception('recurrent_collection_failed', error)
             failure = f"{type(error).__name__}: {error}"
             stop_category = "user_stop" if self.stop_file.exists() else "runtime_error"
-            frozen = recorder.abort(directory / "trajectory-aborted", failure) if not recorder.closed else {}
+            if online is not None:
+                online.close()
+                frozen = {'schema': 'playmodel.online-run.v1', 'training_eligible': False,
+                          'full_run_complete': False, 'online_learning': online_progress()}
+            else:
+                frozen = recorder.abort(directory / "trajectory-aborted", failure) if not recorder.closed else {}
+        finally:
+            if online is not None and self.status:
+                self.status.online_provider = None
         summary = {**frozen, "run_id": run_id, "split": split, "checkpoint": str(Path(checkpoint).resolve()),
             **contract_fields(), "runtime_source_hashes": self.runtime_source_hashes,
             "evaluation_scope_id": self.evaluation_scope_id,
@@ -732,13 +782,17 @@ def _runtime_contract(root):
         'neural_runtime.py', 'vision.py', 'menu.py', 'menu_focus.py', 'neural_navigation.py', 'session.py',
         'neural_choices.py', 'neural_menu_controller.py', 'state_features.py',
         'stats_roi_ocr.py', 'shop_learning.py', 'shop_currency_ocr.py',
-        'pilot.py', 'menu_capture.py', 'ocr.py')}
+        'pilot.py', 'menu_capture.py', 'ocr.py', 'capture.py', 'stream.py')}
     for filename in ('src/playmodel/control/realtime.py',
                      'src/playmodel/learning/full_run.py', 'src/playmodel/learning/recurrent_ppo.py',
                      'src/playmodel/learning/runtime_contract.py', 'scripts/run_recurrent_cycle.py'):
         hashes[filename] = _file_sha(root / filename)
     worker = 'src/playmodel/learning/recurrent_training_worker.py'
     hashes[worker] = _file_sha(root / worker)
+    for filename in ('src/playmodel/learning/online_ppo.py',
+                     'src/playmodel/games/brotato/online_runtime.py', 'scripts/run_online_learning.py'):
+        if (root / filename).is_file():
+            hashes[filename] = _file_sha(root / filename)
     return hashes
 
 
@@ -799,6 +853,8 @@ def main(argv=None):
     parser.add_argument('--recover-active-run', action='store_true',
                         help='finish a positively recognized active run as excluded partial recovery')
     parser.add_argument('--max-recovery-attempts', type=int, default=2)
+    parser.add_argument('--online-updates', action='store_true',
+                        help='learn from verified live fragments and apply candidates at action boundaries')
     args = parser.parse_args(argv)
     if not 1 <= args.cycles <= 5 or not 1 <= args.evaluation_runs <= 5:
         parser.error("cycles and evaluation-runs must be 1..5")
@@ -810,6 +866,9 @@ def main(argv=None):
     root = Path(__file__).resolve().parents[1]
     try:
         with session_lock(root / 'artifacts/local-learning/worker.lock'):
+            if args.online_updates:
+                from run_online_learning import run_online
+                return run_online(args, root)
             return _run_main(args, parser, root)
     except OSError as error:
         from playmodel.execution_log import exception

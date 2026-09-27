@@ -96,9 +96,25 @@ def read_diagnostic_png(path: Path, *, stride: int = 1) -> tuple[bytes, int, int
     return bytes(pixels), out_width, out_height
 
 
+def _sample_bgra(raw: bytes, width: int, height: int, stride: int) -> tuple[bytes, int, int]:
+    if type(stride) is not int or stride < 1:
+        raise ValueError('Sampling stride must be a positive integer')
+    if stride == 1:
+        return raw, width, height  # Preserve exact original bytes without an 8 MB channel copy.
+    sampled_width = (width + stride - 1) // stride
+    sampled_height = (height + stride - 1) // stride
+    sampled = bytearray(sampled_width * sampled_height * 4)
+    for out_y, source_y in enumerate(range(0, height, stride)):
+        row = raw[source_y * width * 4:(source_y + 1) * width * 4]
+        for channel in range(4):
+            sampled[out_y * sampled_width * 4 + channel:(out_y + 1) * sampled_width * 4:4] = row[channel::stride * 4]
+    return bytes(sampled), sampled_width, sampled_height
+
+
 def _capture_worker(expected_exe: Path, *, pixels_only: bool = False, sample_stride: int = 1,
                     backend: str = "printwindow") -> dict:
     global _DPI_READY
+    processing_started = time.perf_counter_ns()
     if os.name != "nt":
         raise OSError("Brotato window capture requires Windows")
     from ctypes import wintypes as w
@@ -226,13 +242,16 @@ def _capture_worker(expected_exe: Path, *, pixels_only: bool = False, sample_str
             raise OSError("Brotato identity or client bounds changed during capture")
         if backend == "visible_client" and foreground() != hwnd:
             raise OSError("Brotato lost foreground during visible-client capture")
+        identity_verified = time.perf_counter_ns()
         select(memory, old)
         old = None
         # BITMAPINFOHEADER, top-down 32-bit BI_RGB bitmap.
         info = ctypes.create_string_buffer(struct.pack("<IiiHHIIiiII", 40, width, -height, 1, 32, 0, width * height * 4, 0, 0, 0, 0))
         pixels = ctypes.create_string_buffer(width * height * 4)
+        readback_started = time.perf_counter_ns()
         if get_bits(dc, bitmap, 0, height, pixels, info, 0) != height:
             raise OSError("Could not read complete capture bitmap")
+        readback_finished = time.perf_counter_ns()
         raw = pixels.raw
         # Check every RGB pixel; alpha bytes from GDI are not meaningful.
         uniform = all(raw[i::4].count(raw[i]) == width * height for i in range(3))
@@ -244,20 +263,17 @@ def _capture_worker(expected_exe: Path, *, pixels_only: bool = False, sample_str
             "backend": "win32_visible_client_bitblt" if backend == "visible_client" else "win32_printwindow_client",
             "foreground_at_start": was_foreground, "foreground_at_finish": foreground() == hwnd,
             "capture_started_at_ns": started, "capture_finished_at_ns": finished,
+            "capture_processing_started_at_ns": processing_started,
+            "identity_verified_at_ns": identity_verified,
+            "readback_started_at_ns": readback_started, "readback_finished_at_ns": readback_finished,
+            "pixels_validated_at_ns": time.perf_counter_ns(),
             "rendered_at_ns": None, "fresh_render_verified": False,
             "clock": "perf_counter_ns_same_host",
         }
         if pixels_only:
-            if type(sample_stride) is not int or sample_stride < 1:
-                raise ValueError("Sampling stride must be a positive integer")
-            sampled_width = (width + sample_stride - 1) // sample_stride
-            sampled_height = (height + sample_stride - 1) // sample_stride
-            sampled = bytearray(sampled_width * sampled_height * 4)
-            for out_y, source_y in enumerate(range(0, height, sample_stride)):
-                row = raw[source_y * width * 4:(source_y + 1) * width * 4]
-                for channel in range(4):
-                    sampled[out_y * sampled_width * 4 + channel:(out_y + 1) * sampled_width * 4:4] = row[channel::sample_stride * 4]
-            return {**report, "pixels": bytes(sampled), "sample_width": sampled_width, "sample_height": sampled_height}
+            sampled, sampled_width, sampled_height = _sample_bgra(raw, width, height, sample_stride)
+            return {**report, "pixels": sampled, "sample_width": sampled_width, "sample_height": sampled_height,
+                    "sample_finished_at_ns": time.perf_counter_ns()}
         png = _png(width, height, raw)
         return {**report, "pixels_sha256": hashlib.sha256(raw).hexdigest(), "png_base64": base64.b64encode(png).decode("ascii")}
     finally:

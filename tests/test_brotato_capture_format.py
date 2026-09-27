@@ -3,10 +3,23 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from playmodel.games.brotato.capture import _png, read_diagnostic_png, region_digest
+from playmodel.games.brotato.capture import _png, _sample_bgra, read_diagnostic_png, region_digest
 
 
 class CaptureFormatTests(unittest.TestCase):
+    def test_raw_sampling_matches_original_positions_and_stride_one_reuses_bytes(self):
+        for width, height in ((7, 5), (320, 180), (1, 1)):
+            raw = bytes((index * 31) % 256 for index in range(width * height * 4))
+            for stride in (1, 2, 6, 32):
+                with self.subTest(size=(width, height), stride=stride):
+                    pixels, sw, sh = _sample_bgra(raw, width, height, stride)
+                    expected = b''.join(raw[(y * width + x) * 4:(y * width + x + 1) * 4]
+                                        for y in range(0, height, stride) for x in range(0, width, stride))
+                    self.assertEqual(pixels, expected)
+                    self.assertEqual((sw, sh), ((width + stride - 1) // stride, (height + stride - 1) // stride))
+                    if stride == 1:
+                        self.assertIs(pixels, raw)
+
     def test_saved_frame_and_odd_stride_preserve_rgb_positions(self):
         width, height = 7, 5
         source = bytes(channel for y in range(height) for x in range(width)

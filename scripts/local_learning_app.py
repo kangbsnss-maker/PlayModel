@@ -24,7 +24,9 @@ STOP = ROOT / 'artifacts/BROTATO_STOP'
 LOCK = RUNTIME / 'worker.lock'
 PHASES = {'initializing': '준비', 'cycle_start': '다음 학습 준비',
           'new_run_setup': '캐릭터·무기·난이도 선택', 'combat': '전투 경험 수집',
-          'menu': '성장·상점 선택', 'training': 'GPU 학습',
+          'menu': '성장·상점 선택', 'training': '가중치 학습',
+          'training_worker_started': '별도 학습 작업 준비',
+          'await_training_worker': '판 종료 · 학습 결과 대기',
           'comparison_complete': '새 판 비교 완료', 'stopped': '중지',
           'recovery': '진행 중인 판 복구', 'candidate_rejected': '후보 검사 탈락',
           'collect_training': '학습용 새 판 수집', 'training_collected': '학습 판 저장 완료',
@@ -98,6 +100,8 @@ def launch_worker(checkpoint: Path, resume_summary: Path | None, *, resume_lates
         command += ['--resume-latest']
     if resume_summary:
         command += ['--resume-summary', str(resume_summary.resolve())]
+    else:
+        command += ['--online-updates']
     # The user explicitly requested resume by pressing Start. Never clear this
     # file during background retries or passive application startup.
     STOP.unlink(missing_ok=True)
@@ -127,8 +131,8 @@ class App:
         self.window = window
         self.pending_until = 0.0
         window.title('PlayModel — 로컬 자체 학습')
-        window.geometry('790x510')
-        window.minsize(650, 470)
+        window.geometry('790x570')
+        window.minsize(650, 530)
         frame = ttk.Frame(window, padding=20)
         frame.pack(fill='both', expand=True)
         ttk.Label(frame, text='PlayModel', font=('Segoe UI', 23, 'bold')).pack(anchor='w')
@@ -207,7 +211,31 @@ class App:
                 state = str(status.get('status', '아직 실행하지 않음'))
                 self.state.set('중지됨 · ' + STATES.get(state, state))
             self.start_button.state(['disabled'] if running or time.monotonic() < self.pending_until else ['!disabled'])
-            self.details.set(f"완료한 비교: {status.get('completed_cycles', 0)}\n"
+            learning = status.get('background_training') or {}
+            learning_state = learning.get('status', 'not_started')
+            learning_phase = learning.get('phase', '')
+            learning_labels = {'not_started': '아직 시작되지 않음', 'launching': '작업자 시작 중',
+                               'running': '진행 중', 'completed': '완료', 'failed': '오류',
+                               'cancelled': '중단', 'timed_out': '시간 제한 중단'}
+            learning_phases = {'waiting_for_combat': '첫 전투 입력 대기',
+                               'training_imports': '라이브러리 준비', 'training_evidence': '자료 검증',
+                               'training': '가중치 갱신', 'training_save': '후보 저장',
+                               'training_result': '결과 저장', 'training_recovery': '저장된 후보 복원'}
+            learning_text = learning_labels.get(learning_state, learning_state)
+            if learning_phase:
+                learning_text += ' · ' + learning_phases.get(learning_phase, learning_phase)
+            online = status.get('online_learning') or {}
+            if online:
+                online_status = str(online.get('status', '경험 수집'))
+                online_labels = {'collecting': '경험 묶음 수집', 'training': '가중치 갱신', 'learning': '가중치 갱신',
+                                 'candidate_ready': '새 모델 적용 대기', 'closed': '구간 기록 완료',
+                                 'failed': '오류', 'running': '수집·학습 반복'}
+                learning_text = ('온라인 · ' + online_labels.get(online_status, online_status)
+                                 + f" · 이번 판 모델 반영 {len(online.get('adoptions', []))}회")
+            split = {'train': '학습 자료 수집', 'evaluation': '평가 · 학습 자료와 분리'}.get(status.get('split'), '준비')
+            self.details.set(f"현재 판: {split}\n"
+                             f"별도 학습 기록: {learning_text}\n"
+                             f"완료한 비교: {status.get('completed_cycles', status.get('cycle', 0))}\n"
                              f"최근 오류: {status.get('error', status.get('reason', '없음'))}\n"
                              f"상태 기록: {status_path or '없음'}")
         except OSError as error:

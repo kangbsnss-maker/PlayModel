@@ -98,6 +98,9 @@ class NeuralAction:
     sent_at_ns: int | None = None
     generation: int | None = None
     transport_started_at_ns: int | None = None
+    behavior_version: str | None = None
+    actor_segment: int | None = None
+    behavior_model: object | None = field(default=None, repr=False)
     legal_mask: tuple[bool, ...] = field(init=False, repr=False)
     recorded_hidden_before: tuple[float, ...] = field(init=False, repr=False)
 
@@ -114,9 +117,10 @@ class NeuralAction:
 
 
 class _Writer:
-    def __init__(self, directory, first_action_callback=None):
+    def __init__(self, directory, first_action_callback=None, action_callback=None):
         self.directory = directory
         self.first_action_callback = first_action_callback
+        self.action_callback = action_callback
         (directory / 'frames').mkdir()
         self.pending = queue.Queue(32)
         self.error = None
@@ -139,6 +143,8 @@ class _Writer:
                     _json(path.with_suffix('.json'), packet.frame.metadata)
                     stream.write(json.dumps(record, allow_nan=False) + '\n')
                     stream.flush()
+                    if self.action_callback is not None:
+                        self.action_callback(packet, record, self.directory)
                     if self.first_action_callback is not None:
                         callback, self.first_action_callback = self.first_action_callback, None
                         # This is the recorder thread, after a real transmission
@@ -169,12 +175,13 @@ def _action_record(packet):
             'old_value': packet.value, 'legal_mask': packet.legal_mask,
             'hidden_before': packet.recorded_hidden_before, 'reset': packet.reset,
             'action_origin': 'policy', 'transmitted': True, 'acknowledged': None,
-            'game_application_verified': False, 'clock_domain': CLOCK}
+            'game_application_verified': False, 'clock_domain': CLOCK,
+            'behavior_version': packet.behavior_version, 'actor_segment': packet.actor_segment}
 
 
 class NeuralMovementSink:
     """Single writer: sends the sampled action unchanged, then commits memory."""
-    def __init__(self, background, writer, hwnd, hidden, *, reset_first=True):
+    def __init__(self, background, writer, hwnd, hidden, *, reset_first=True, online_session=None):
         self.background, self.writer, self.hwnd = background, writer, hwnd
         self.hidden = hidden
         self.reset_first = reset_first
@@ -184,6 +191,7 @@ class NeuralMovementSink:
         self.previous_action = 0
         self.last_sent_at_ns = None
         self.release_failed = False
+        self.online_session = online_session
 
     def send(self, action, *, generation, observation_sequence, deadline_ns):
         if (not isinstance(action, NeuralAction) or action.frame.sequence != observation_sequence
@@ -206,6 +214,9 @@ class NeuralMovementSink:
                    'transmitted': None, 'acknowledged': None,
                    'game_application_verified': False, 'error': None, 'clock_domain': CLOCK}
         started = time.perf_counter_ns()
+        if self.online_session is not None:
+            self.online_session.validate_dispatch(action)
+            started = time.perf_counter_ns()
         if started >= deadline_ns:
             raise OSError('neural movement deadline expired')
         attempt['transport_started_at_ns'] = started
@@ -224,6 +235,8 @@ class NeuralMovementSink:
         self.previous_action = action.action
         self.last_sent_at_ns = action.sent_at_ns
         self.hidden = action.hidden_after
+        if self.online_session is not None:
+            self.online_session.commit(action)
         # Publish only after all native transmission state is committed. The
         # recorder receives a complete packet and never mutates policy state.
         self.writer.pending.put_nowait(action)
@@ -357,7 +370,7 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
                      stream_factory=CaptureStream, background_factory=BackgroundController,
                      vision_factory=BrotatoVision, chunk_steps=32, burn_in=8, split='train',
                      initial_hidden=None, reset_first=None, scene_callback=None, build_state=None,
-                     first_action_callback=None, terminal_ocr_reader=None) -> dict:
+                     first_action_callback=None, terminal_ocr_reader=None, online_session=None) -> dict:
     """Explicit live collection entry point; performs no PPO update or menu action.
 
     An optional hidden state carries history from a caller-owned menu path, but
@@ -367,6 +380,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
     """
     if config.train or config.defer_training or split not in ('train', 'validation', 'test', 'evaluation'):
         raise ValueError('collection is separate from training; use a fixed split')
+    if online_session is not None and split != 'train':
+        raise ValueError('online actor updates require the training split')
     if not 1 <= chunk_steps <= 64 or not 0 <= burn_in < 64 or chunk_steps + burn_in > 64:
         raise ValueError('bounded recurrent chunk settings required')
     if terminal_observer is None and (terminal_rules is None or ocr_script is None):
@@ -374,7 +389,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
     _evidence(combat_entry, ('combat',))
     # A private copy guarantees that an external trainer cannot change behavior
     # weights while this collector owns input. It is never promoted here.
-    behavior = deepcopy(model).eval()
+    behavior = (online_session.begin_combat(model, build_state) if online_session is not None
+                else deepcopy(model).eval())
     build_state = deepcopy(build_state)
     if behavior.config.context_dim == 64 and build_state is None:
         raise ValueError('context64 collection requires observed build state')
@@ -404,7 +420,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         output.write(Path(combat_entry.frame_ref).read_bytes())
     if terminal_rules:
         _json(session / 'terminal-rules.json', terminal_rules.document)
-    writer = _Writer(session, first_action_callback=first_action_callback)
+    writer = _Writer(session, first_action_callback=first_action_callback,
+                     action_callback=online_session.record_action if online_session is not None else None)
     stream = controller = safety = terminal_worker = sink = None
     terminal = final_frame = None
     final_phase = 0
@@ -434,7 +451,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         hwnd = first.metadata['hwnd']
         background = background_factory(hwnd, executable)
         background.release()
-        sink = NeuralMovementSink(background, writer, hwnd, hidden, reset_first=reset_first)
+        sink = NeuralMovementSink(background, writer, hwnd, hidden, reset_first=reset_first,
+                                  online_session=online_session)
         vision = vision_factory()
         rng = torch.Generator(device=device).manual_seed(config.seed)
         # Complete lazy kernel setup before acquiring timed input authority.
@@ -469,19 +487,25 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
                     scene_callback('combat')
                 timing['callback_finished_at_ns'] = time.perf_counter_ns()
                 timing['stage'] = 'input_tensors'
-                inputs = _inputs(behavior, frame, sink.previous_action, build_state=build_state)
                 reset = sink.sent_count == 0 and sink.reset_first
-                before = sink.hidden.detach().clone()
+                chosen, version, segment = behavior, None, None
+                before = sink.hidden
+                if online_session is not None:
+                    chosen, before, reset, version, segment = online_session.inference_state(before, reset)
+                inputs = _inputs(chosen, frame, sink.previous_action, build_state=build_state)
+                before = before.detach().clone()
                 timing['inputs_finished_at_ns'] = time.perf_counter_ns()
                 timing['stage'] = 'model_and_sample'
                 with torch.no_grad():
-                    output = behavior.step(*inputs, hidden=before, reset=torch.tensor([reset], device=device))
+                    output = chosen.step(*inputs, hidden=before, reset=torch.tensor([reset], device=device))
                     action, logp = output.sample(generator=rng)
                 timing['model_finished_at_ns'] = time.perf_counter_ns()
                 timing['stage'] = 'packet'
                 packet = NeuralAction(frame, tuple(item.detach().cpu() for item in inputs), before.cpu(),
                                       output.next_hidden.detach(), reset, int(action.item()), float(logp.item()),
                                       float(output.value.item()), output.probabilities[0].cpu().tolist(), 0)
+                packet.behavior_version, packet.actor_segment = version, segment
+                packet.behavior_model = chosen if online_session is not None else None
                 packet.decided_at_ns = time.perf_counter_ns()
                 timing['outcome'] = 'proposal_ready'
                 return packet
@@ -503,6 +527,7 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         terminal_worker = SlowTerminalWorker(observer)
         last_sequence = -1
         pending_sent_count = None
+        requested_after_send = None
         while True:
             if safety.reason:
                 reason = safety.reason
@@ -552,6 +577,11 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
                         last_sequence = frame.sequence
                         pending_sent_count = sink.sent_count
             controller.tick()
+            if sink.last_sent_at_ns is not None and sink.last_sent_at_ns != requested_after_send:
+                request = getattr(stream, 'request_fresh', None)
+                if request is not None:
+                    request(sink.last_sent_at_ns)
+                requested_after_send = sink.last_sent_at_ns
             time.sleep(config.tick_ms / 1000)
         # Obtain a real post-action observation before normal bounded release.
         if reason == 'step_limit' and sink.packets:
@@ -665,7 +695,9 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         if not releases or final_frame.metadata['capture_started_at_ns'] > min(releases):
             eligible = False
             caught = 'no_post_action_final_observation_before_time_limit_release'
-    if eligible:
+    if online_session is not None:
+        online_session.end_combat(frame=final_frame, phase=final_phase, terminal=terminal, eligible=bool(eligible))
+    if eligible and online_session is None:
         try:
             _json(session / 'final-observation.json', {**final_frame.metadata, 'available_at_ns': final_frame.available_at_ns})
             with (session / 'final-observation.bgra').open('xb') as output:
@@ -697,7 +729,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
               'initial_states_path': str(initial_states_path.resolve()) if initial_states_path else None,
               'behavior_version': behavior.policy_version(), 'training_performed': False,
               'runtime_contract': RUNTIME_CONTRACT, 'phase_schema': PHASE_SCHEMA,
-              'scope': 'bounded_movement_trial', 'full_run_complete': False, 'menu_heads_used': False,
+              'scope': 'online_versioned_combat' if online_session is not None else 'bounded_movement_trial',
+              'full_run_complete': False, 'menu_heads_used': False,
               'acknowledgement': 'unknown', 'game_application_verified': False,
               'reward_schema': 'independent_death_minus1_wave_clear_plus1_other_zero',
               'terminal_kind': terminal.kind if terminal else None, 'final_phase': final_phase,
@@ -706,8 +739,12 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
               'last_hidden': last_hidden.tolist(), 'final_hidden': last_hidden.tolist(),
               'hidden_scope': 'after_last_transmitted_action_observation_before_bootstrap',
               'recorder_complete': recorder_complete,
-              'rollout_eligible': bool(eligible),
+              'rollout_eligible': bool(eligible) and online_session is None,
               'worker_stopped': worker_stopped, 'cleanup_errors': cleanup_errors}
+    if online_session is not None:
+        report.update(online_collection_eligible=bool(eligible), online_session=online_session.snapshot(),
+                      behavior_versions=list(dict.fromkeys(packet.behavior_version for packet in sink.packets))
+                        if sink else [])
     _json(session / 'report.json', report)
     # Disk logging stays outside the timed policy/dispatch loop. The durable
     # controller ledger includes the failed job even when it was still running.
