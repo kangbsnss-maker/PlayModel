@@ -524,7 +524,10 @@ def _safe_recovery_release(report):
     if not releases or any(not isinstance(row.get('receipt'), dict)
             or row['receipt'].get('transmitted') is not True
             or row['receipt'].get('acknowledged') is False
-            or 'error' in row['reason'] or row['reason'].startswith('release_')
+            or ('error' in row['reason'] and not (
+                row['reason'] == 'input_error:PrePostMovementDeadline'
+                and report['controller_guard_reason'] == row['reason'] and failure_finished is not None))
+            or row['reason'].startswith('release_')
             or not isinstance(row.get('send_finished_at_ns'), int)
             or (failure_finished is not None and row['send_finished_at_ns'] <= failure_finished)
             or row['send_finished_at_ns'] >= row['deadline_ns'] for row in releases):

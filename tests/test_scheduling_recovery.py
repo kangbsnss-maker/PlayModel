@@ -204,3 +204,16 @@ class SchedulingRecoveryTests(unittest.TestCase):
                 attempt['background_stages'] = deepcopy(proof)
                 self.persist_unsent(report, attempts, events)
                 self.assertIsNone(runtime._safe_recovery_release(report))
+
+    def test_typed_prepost_reason_does_not_turn_successful_release_into_error(self):
+        report, attempts, events = self.unsent_fixture('typed-prepost')
+        report['controller_guard_reason'] = 'input_error:PrePostMovementDeadline'
+        for event in events:
+            if event['reason'] == 'sink_deadline':
+                event['reason'] = 'input_error:PrePostMovementDeadline'
+        self.persist_unsent(report, attempts, events)
+        self.assertIsNotNone(runtime._safe_recovery_release(report))
+        release = next(row for row in events if row['kind'] == 'release')
+        release['receipt']['transmitted'] = False
+        self.persist_unsent(report, attempts, events)
+        self.assertIsNone(runtime._safe_recovery_release(report))
