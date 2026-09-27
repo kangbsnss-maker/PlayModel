@@ -82,6 +82,8 @@ class RecoverySessionTests(unittest.TestCase):
                 seconds=10, stop_file=root / 'STOP', ocr_script=root / 'unused.ps1',
                 edit=False, run_context={'partial_recovery': partial},
                 combat_runner=combat, neural_menu=neural)
+            if original_combat_frame is not None:
+                self.assertIs(combat.call_args.kwargs['terminal_ocr_reader'], reader)
             actions = json.loads((Path(report['session_directory']) / 'menu-actions.json').read_text(encoding='utf-8'))
             return report, actions, controller, neural, capture_count
 

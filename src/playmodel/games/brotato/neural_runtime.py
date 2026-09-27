@@ -357,7 +357,7 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
                      stream_factory=CaptureStream, background_factory=BackgroundController,
                      vision_factory=BrotatoVision, chunk_steps=32, burn_in=8, split='train',
                      initial_hidden=None, reset_first=None, scene_callback=None, build_state=None,
-                     first_action_callback=None) -> dict:
+                     first_action_callback=None, terminal_ocr_reader=None) -> dict:
     """Explicit live collection entry point; performs no PPO update or menu action.
 
     An optional hidden state carries history from a caller-owned menu path, but
@@ -413,6 +413,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
     phase_frame = [None]
     phase_rejection = [None]
     phase_ended = threading.Event()
+    policy_timings = []
+    last_policy_frame = [None]
     worker_stopped, recorder_complete = True, False
     cleanup_errors = []
     try:
@@ -442,31 +444,52 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
 
         def policy(observation, deadline):
             frame = observation.payload
-            state = vision.observe(frame.pixels, frame.metadata['sample_width'], frame.metadata['sample_height'],
-                                   observed_at_ns=observation.observed_at_ns, alpha_mode='ignore')
-            if not state.combat_likely:
-                phase_frame[0] = frame
-                phase_rejection[0] = {
-                    'status': getattr(state, 'status', 'unknown'), 'combat_likely': False,
-                    'hp_fill_fraction': getattr(state, 'hp_fill_fraction', None),
-                    'extractor_version': getattr(state, 'extractor_version', None),
-                    'rejected_at_ns': time.perf_counter_ns(),
-                }
-                phase_ended.set()
-                return None
-            if scene_callback:
-                scene_callback('combat')
-            inputs = _inputs(behavior, frame, sink.previous_action, build_state=build_state)
-            reset = sink.sent_count == 0 and sink.reset_first
-            before = sink.hidden.detach().clone()
-            with torch.no_grad():
-                output = behavior.step(*inputs, hidden=before, reset=torch.tensor([reset], device=device))
-                action, logp = output.sample(generator=rng)
-            packet = NeuralAction(frame, tuple(item.detach().cpu() for item in inputs), before.cpu(),
-                                  output.next_hidden.detach(), reset, int(action.item()), float(logp.item()),
-                                  float(output.value.item()), output.probabilities[0].cpu().tolist(), 0)
-            packet.decided_at_ns = time.perf_counter_ns()
-            return packet
+            last_policy_frame[0] = frame
+            timing = {'sequence': observation.sequence, 'observed_at_ns': observation.observed_at_ns,
+                      'available_at_ns': observation.available_at_ns, 'deadline_ns': deadline,
+                      'started_at_ns': time.perf_counter_ns(), 'stage': 'vision', 'outcome': 'running'}
+            policy_timings.append(timing)  # Memory only; no logging/filesystem in this callback.
+            try:
+                state = vision.observe(frame.pixels, frame.metadata['sample_width'], frame.metadata['sample_height'],
+                                       observed_at_ns=observation.observed_at_ns, alpha_mode='ignore')
+                timing['vision_finished_at_ns'] = time.perf_counter_ns()
+                if not state.combat_likely:
+                    phase_frame[0] = frame
+                    phase_rejection[0] = {
+                        'status': getattr(state, 'status', 'unknown'), 'combat_likely': False,
+                        'hp_fill_fraction': getattr(state, 'hp_fill_fraction', None),
+                        'extractor_version': getattr(state, 'extractor_version', None),
+                        'rejected_at_ns': time.perf_counter_ns(),
+                    }
+                    timing['outcome'] = 'phase_rejected'
+                    phase_ended.set()
+                    return None
+                timing['stage'] = 'scene_callback'
+                if scene_callback:
+                    scene_callback('combat')
+                timing['callback_finished_at_ns'] = time.perf_counter_ns()
+                timing['stage'] = 'input_tensors'
+                inputs = _inputs(behavior, frame, sink.previous_action, build_state=build_state)
+                reset = sink.sent_count == 0 and sink.reset_first
+                before = sink.hidden.detach().clone()
+                timing['inputs_finished_at_ns'] = time.perf_counter_ns()
+                timing['stage'] = 'model_and_sample'
+                with torch.no_grad():
+                    output = behavior.step(*inputs, hidden=before, reset=torch.tensor([reset], device=device))
+                    action, logp = output.sample(generator=rng)
+                timing['model_finished_at_ns'] = time.perf_counter_ns()
+                timing['stage'] = 'packet'
+                packet = NeuralAction(frame, tuple(item.detach().cpu() for item in inputs), before.cpu(),
+                                      output.next_hidden.detach(), reset, int(action.item()), float(logp.item()),
+                                      float(output.value.item()), output.probabilities[0].cpu().tolist(), 0)
+                packet.decided_at_ns = time.perf_counter_ns()
+                timing['outcome'] = 'proposal_ready'
+                return packet
+            except Exception as error:
+                timing['outcome'] = f'exception:{type(error).__name__}'
+                raise
+            finally:
+                timing['finished_at_ns'] = time.perf_counter_ns()
 
         controller = RealtimeController(policy, sink, ControlLimits(
             int(config.max_frame_age_ms * 1e6), int(config.policy_budget_ms * 1e6), 25_000_000,
@@ -475,7 +498,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         generation = controller.arm()
         started = time.perf_counter_ns()
         safety = SafetyMonitor(controller, sink, stream, stop_file, config, started)
-        observer = terminal_observer or LocalTerminalObserver(executable, session, Path(ocr_script), terminal_rules)
+        observer = terminal_observer or LocalTerminalObserver(executable, session, Path(ocr_script),
+                                                              terminal_rules, reader=terminal_ocr_reader)
         terminal_worker = SlowTerminalWorker(observer)
         last_sequence = -1
         pending_sent_count = None
@@ -593,6 +617,21 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
     completed_retries = [event for event in events if event['kind'] == 'retry_completed']
     _json(session / 'control-events.json', events)
     _json(session / 'input-attempts.json', sink.transport_attempts if sink else [])
+    # A still-running callback remains an incomplete timing record. It is not
+    # marked transmitted or committed, and the frozen copy cannot be rewritten.
+    timing_snapshot = [dict(row) for row in policy_timings]
+    _json(session / 'policy-timings.json', {'clock_domain': CLOCK, 'records': timing_snapshot,
+                                         'worker_stopped': worker_stopped,
+                                         'scope': 'policy_compute_not_transmission_or_game_application'})
+    guard_frame_path = None
+    if controller_guard_reason and last_policy_frame[0] is not None:
+        guard_frame = last_policy_frame[0]
+        guard_frame_path = session / 'guard-frame.bgra'
+        guard_frame_path.write_bytes(guard_frame.pixels)
+        _json(session / 'guard-frame.json', {'sequence': guard_frame.sequence, 'metadata': guard_frame.metadata,
+            'available_at_ns': guard_frame.available_at_ns, 'frame_ref': guard_frame_path.name,
+            'frame_sha256': hashlib.sha256(guard_frame.pixels).hexdigest(),
+            'scope': 'latest_started_policy_observation_not_an_action_or_training_label'})
     if phase_frame[0] is not None:
         # Preserve the exact rejected observation, including failed/unknown
         # trials. A later terminal screenshot cannot explain this decision.
@@ -648,6 +687,8 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
             rollout_path = flat_rollout_path = initial_states_path = None
     report = {'session_directory': str(session.resolve()), 'reason': reason, 'error': caught,
               'controller_guard_reason': controller_guard_reason,
+              'policy_timings_path': str((session / 'policy-timings.json').resolve()),
+              'guard_frame_path': str(guard_frame_path.resolve()) if guard_frame_path else None,
               'policy_deadline_retries': len(policy_retries),
               'policy_deadline_retries_completed': len(completed_retries),
               'deadline_retry_contract': 'one_fresh_frame_within_unchanged_previous_input_deadlines',
@@ -675,6 +716,9 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         execution_event('neural_controller_diagnostics', session_directory=str(session.resolve()),
                         reason=reason, error=caught, controller_guard_reason=controller_guard_reason,
                         control_events_path=str((session / 'control-events.json').resolve()),
+                        policy_timings_path=report['policy_timings_path'],
+                        guard_frame_path=report['guard_frame_path'],
+                        latest_policy_timing=timing_snapshot[-1] if timing_snapshot else None,
                         retries=policy_retries, completed_retries=len(completed_retries),
                         failures=[event for event in events if event['kind'] in ('expired', 'discarded')],
                         actual_transmissions=report['steps'], rollout_eligible=bool(eligible))

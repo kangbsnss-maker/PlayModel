@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -89,6 +91,33 @@ class MenuOcrWorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'identity mismatch'):
                 worker.read(frame)
             self.assertIsNone(worker.process)
+
+    def test_inflight_terminal_and_next_menu_share_serialized_reader_without_reply_mixup(self):
+        slow = self.root / 'slow-terminal.png'
+        slow.write_bytes(b'terminal')
+        with MenuOcr(self.root / 'script.ps1', cache_seconds=0) as worker:
+            worker.read(self.frame)  # Session menu warms the one child.
+            completed, replies = threading.Event(), {}
+            terminal = threading.Thread(target=lambda: replies.update(terminal=worker.read(slow)))
+            terminal.start()
+            until = time.monotonic() + 1
+            while worker._sequence < 2 and time.monotonic() < until:
+                time.sleep(.005)
+            self.assertEqual(worker._sequence, 2)
+
+            def next_menu():
+                replies['menu'] = worker.read(self.frame)
+                completed.set()
+            menu = threading.Thread(target=next_menu)
+            menu.start()
+            self.assertFalse(completed.wait(.05), 'menu must not consume the in-flight terminal reply')
+            terminal.join(4)
+            menu.join(4)
+            self.assertFalse(terminal.is_alive())
+            self.assertFalse(menu.is_alive())
+            self.assertEqual(replies['terminal']['text'], str(slow.resolve()))
+            self.assertEqual(replies['menu']['text'], str(self.frame.resolve()))
+            self.assertEqual(len(self.starts), 1)
 
 
 if __name__ == '__main__':

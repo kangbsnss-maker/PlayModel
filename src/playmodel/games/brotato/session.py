@@ -397,12 +397,17 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 if recording:
                     recording.event('combat_start', '전투 시작. 로컬 이동 정책이 화면을 보고 이동합니다. 아이템 수집과 위험 회피를 시도합니다.')
                 menu_capture.close()
+                # Neural sessions already warmed this uncached reader during
+                # menu recognition. Its lock serializes any final terminal read
+                # with the next menu read; the observer only borrows ownership.
+                combat_options = {'terminal_ocr_reader': menu_reader} if neural_menu is not None else {}
                 pilot = (combat_runner or run_pilot)(executable, directory / "pilots", policy=policy,
                                   config=PilotConfig(max_seconds=min(130, remaining), max_steps=2600, train=combat_runner is None,
                                                      defer_training=learning_queue is not None, movement_hold_ms=200),
                                   stop_file=stop_file, combat_entry=evidence,
                                   terminal_rules=calibrated_rules(), ocr_script=ocr_script,
-                                  vision_factory=lambda: BrotatoVision(avoidance_radius=style['behavior']['avoidance_radius']))
+                                  vision_factory=lambda: BrotatoVision(avoidance_radius=style['behavior']['avoidance_radius']),
+                                  **combat_options)
                 pilots.append(pilot)
                 if learning_queue is not None and pilot.get('training_deferred'):
                     learning_jobs.append(enqueue(learning_queue, Path(pilot['session_directory']), style_sha=style_digest(style)))

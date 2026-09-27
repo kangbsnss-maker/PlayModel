@@ -262,15 +262,19 @@ class TerminalRules:
 class LocalTerminalObserver:
     """Full-resolution local OCR on the slow path, independent of movement policy."""
 
-    def __init__(self, executable: Path, directory: Path, script: Path, rules: TerminalRules):
+    def __init__(self, executable: Path, directory: Path, script: Path, rules: TerminalRules,
+                 *, reader=None):
         self.executable, self.directory, self.script, self.rules = executable, directory, script, rules
         self.previous: tuple[str, int] | None = None
         from .menu_capture import MenuCapture
         from .ocr import MenuOcr
         # Slow observations need fresh independent frames, not a fresh Python
         # and PowerShell process on every observation. Keep their CPU load low.
+        if reader is not None and getattr(reader, 'cache_seconds', None) != 0:
+            raise ValueError('terminal OCR requires an uncached reader')
         self.capture = MenuCapture(executable, fps=4)
-        self.reader = MenuOcr(script, cache_seconds=0)
+        self._owns_reader = reader is None
+        self.reader = MenuOcr(script, cache_seconds=0) if reader is None else reader
 
     def __call__(self) -> StateEvidence | None:
         capture, _, _, _ = self.capture.read(self.directory / "ocr", timeout=4)
@@ -292,7 +296,8 @@ class LocalTerminalObserver:
 
     def close(self):
         try:
-            self.reader.close()
+            if self._owns_reader:
+                self.reader.close()
         finally:
             self.capture.close()
 

@@ -374,6 +374,19 @@ class NeuralRuntimeTests(unittest.TestCase):
         self.assertEqual(report['steps'], 0)
         self.assertEqual(report['policy_deadline_retries'], 0)
         self.assertTrue(any(call.args[0] == 'neural_controller_diagnostics' for call in log.call_args_list))
+        timing, = json.loads(Path(report['policy_timings_path']).read_text())['records']
+        self.assertEqual(timing['outcome'], 'proposal_ready')  # Late result is still never sent.
+        self.assertGreaterEqual(timing['model_finished_at_ns'] - timing['inputs_finished_at_ns'], 100_000_000)
+        for before, after in zip(('started_at_ns', 'vision_finished_at_ns', 'callback_finished_at_ns',
+                                  'inputs_finished_at_ns', 'model_finished_at_ns'),
+                                 ('vision_finished_at_ns', 'callback_finished_at_ns', 'inputs_finished_at_ns',
+                                  'model_finished_at_ns', 'finished_at_ns')):
+            self.assertLessEqual(timing[before], timing[after])
+        self.assertEqual((Path(report['session_directory']) / 'actions.jsonl').read_text(), '')
+        guard = Path(report['guard_frame_path'])
+        proof = json.loads(guard.with_suffix('.json').read_text())
+        self.assertEqual(proof['sequence'], timing['sequence'])
+        self.assertEqual(proof['frame_sha256'], hashlib.sha256(guard.read_bytes()).hexdigest())
 
     def test_real_transport_overrun_still_releases_and_excludes_rollout(self):
         self.state.mutate = lambda: time.sleep(.06)
