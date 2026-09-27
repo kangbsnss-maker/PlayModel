@@ -52,7 +52,7 @@ class OnlineJournalTests(unittest.TestCase):
         args = SimpleNamespace(resume_summary=None, resume_latest=True, output=self.root, checkpoint=self.source)
         selected, origin = self.module.seed_checkpoint(args)
         self.assertEqual(selected, self.candidate.resolve())
-        self.assertEqual(Path(origin), path)
+        self.assertEqual(Path(origin).resolve(), path.resolve())
         self.assertEqual(path.read_text(), original)
 
     def test_rejected_candidate_does_not_replace_seed(self):
