@@ -355,7 +355,8 @@ class PilotTests(unittest.TestCase):
         evidence = self.evidence("combat")
         path = self.root / "entry.json"
         path.write_text(json.dumps(asdict(evidence)), encoding="utf-8")
-        self.assertEqual(load_combat_entry(path), evidence)
+        self.assertEqual(load_combat_entry(path),
+                         replace(evidence, frame_ref=str(Path(evidence.frame_ref).resolve())))
         Path(evidence.frame_ref).write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "digest mismatch"):
             load_combat_entry(path)

@@ -46,7 +46,7 @@ class LocalLearningAppTests(unittest.TestCase):
         self.assertEqual(kwargs['stdin'], self.module.subprocess.DEVNULL)
         self.assertNotIn('shell', kwargs)
         self.assertTrue(log.exists())
-        self.assertEqual(json.loads(self.module.CONFIG.read_text())['checkpoint'], str(self.model))
+        self.assertEqual(json.loads(self.module.CONFIG.read_text())['checkpoint'], str(self.model.resolve()))
 
     def test_duplicate_or_invalid_launch_preserves_stop_file(self):
         self.module.STOP.write_text('user stop')
@@ -71,7 +71,7 @@ class LocalLearningAppTests(unittest.TestCase):
             spawn.return_value.pid = 123
             self.module.launch_worker(self.model, summary)
         command = spawn.call_args.args[0]
-        self.assertEqual(command[command.index('--resume-summary') + 1], str(summary))
+        self.assertEqual(command[command.index('--resume-summary') + 1], str(summary.resolve()))
 
     def test_live_os_lock_detected_and_release_not_confused_with_stale_file(self):
         import msvcrt
