@@ -6,7 +6,7 @@ import time
 import uuid
 
 from .background import BackgroundController
-from .capture import capture_session,read_diagnostic_png
+from .capture import capture_session,read_diagnostic_png,_png
 from .ocr import MenuOcr,rows_in_region
 from .menu import classify_scene,selected_button,navigation_key,BUTTONS
 from playmodel.video import SessionRecording
@@ -19,12 +19,38 @@ from .menu_transition import MenuTransitionGate
 CHARACTER_GRID = {i:(69+(i%17)*106,723+(i//17)*106,165+(i%17)*106,819+(i//17)*106) for i in range(51)}
 
 
+def _main_menu_labels(text):
+    # Measured on 1.1.15.4: WinRT reads the l in Profile as uppercase I.
+    return (all(word in text for word in ('start', 'options', 'quit'))
+            and any(word in text for word in ('profile', 'profiie')))
+
+
 def is_main_menu(ocr, pixels, width, height):
     if (width, height) != (1920, 1080):
         return False
     text=''.join(rows_in_region(ocr,(25,600,310,1030))).casefold()
     selected=pixels[(640*width+48)*4:(640*width+48)*4+3]
-    return all(word in text for word in ('start','profile','options','quit')) and len(selected)==3 and min(selected)>180
+    return _main_menu_labels(text) and len(selected)==3 and min(selected)>180
+
+
+def recognize_main_menu(reader, source, ocr, pixels, width, height):
+    """Bounded menu ROI avoids title artwork skewing full-frame OCR coordinates."""
+    if is_main_menu(ocr, pixels, width, height):
+        return True
+    if (width, height) != (1920, 1080) or len(pixels) != width * height * 4:
+        return False
+    selected = pixels[(640 * width + 48) * 4:(640 * width + 48) * 4 + 3]
+    if min(selected) <= 180:
+        return False
+    left, top, right, bottom = 25, 600, 310, 1030
+    crop = b''.join(pixels[(y * width + left) * 4:(y * width + right) * 4]
+                    for y in range(top, bottom))
+    path = Path(source).with_name('main-menu-roi.png')
+    path.write_bytes(_png(right-left, bottom-top, crop))
+    report = reader.read(path)
+    path.with_suffix('.json').write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
+    text = ''.join(rows_in_region(report, (0, 0, right-left, bottom-top))).casefold()
+    return _main_menu_labels(text)
 
 
 def focused_tile(pixels: bytes, width: int, boxes: dict) -> int | None:
@@ -73,7 +99,7 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                 if controller is None: controller=BackgroundController(shot['hwnd'],executable)
                 header=''.join(rows_in_region(ocr,(500,60,1450,160))).casefold()
                 scene=classify_scene(ocr).scene
-                if is_main_menu(ocr,pixels,w,h):
+                if recognize_main_menu(menu_reader,source,ocr,pixels,w,h):
                     recovery_wait=None
                     key='enter'
                 elif scene=='result':

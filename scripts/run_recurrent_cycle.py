@@ -18,6 +18,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -341,7 +342,8 @@ def run_pipeline(source_checkpoint, *, collect_run, train_candidate, evaluation_
 
 class LocalCycle:
     def __init__(self, *, root, output, character_slot, weapon, max_run_seconds,
-                 device="cuda", seed=0, status=None, recover_active_run=False):
+                 device="cuda", seed=0, status=None, recover_active_run=False,
+                 menu_factory=None, terminal_callback=None, tactical_factory=None):
         import torch
         from playmodel.games.brotato.installation import inspect_installation
         self.torch = torch
@@ -350,6 +352,9 @@ class LocalCycle:
         self.max_run_seconds, self.device, self.seed = max_run_seconds, device, seed
         self.status = status
         self.recover_active_run = recover_active_run
+        self.menu_factory = menu_factory
+        self.terminal_callback = terminal_callback
+        self.tactical_factory = tactical_factory
         self.operation_id = None
         self.evaluation_scope_id = None
         self._training_job = None
@@ -367,7 +372,7 @@ class LocalCycle:
         from playmodel.games.brotato.ocr import MenuOcr
         from playmodel.games.brotato.menu import classify_scene
         from playmodel.games.brotato.vision import BrotatoVision
-        from playmodel.games.brotato.setup_run import is_main_menu
+        from playmodel.games.brotato.setup_run import recognize_main_menu
         with MenuCapture(self.executable) as capture, MenuOcr(self.ocr_script) as ocr:
             for _ in range(3):
                 if self.stop_file.exists():
@@ -377,7 +382,7 @@ class LocalCycle:
                 raw = ocr.read(source)
                 _save_json(source.parent / 'startup-ocr.json', raw)
                 scene = classify_scene(raw, width=width, height=height).scene
-                if is_main_menu(raw,pixels,width,height):
+                if recognize_main_menu(ocr,source,raw,pixels,width,height):
                     return 'main_menu'
                 if scene != 'unknown':
                     return scene
@@ -461,7 +466,7 @@ class LocalCycle:
             self._training_job = None
         from playmodel.learning.recurrent_ppo import load_checkpoint
         from playmodel.learning.full_run import FullRunRecorder
-        from playmodel.games.brotato.neural_runtime import run_neural_trial
+        from playmodel.games.brotato.neural_runtime import run_neural_trial, safe_observation_transition
         from playmodel.games.brotato.neural_menu_controller import NeuralMenuController
         from playmodel.games.brotato.session import run_session
         operation_id = self.operation_id if not partial else None
@@ -521,7 +526,19 @@ class LocalCycle:
                     'observed_at_ns': weapon_observation['capture_started_at_ns'],
                     'available_at_ns': proof_time, 'verified_at_ns': proof_time,
                     'origin': 'verified_initial_weapon_setup'})
-        menus = NeuralMenuController(recorder, output_directory=directory / "macro-actions", seed=self.seed)
+        choice_backend = getattr(self, 'menu_factory', None) if not partial else None
+        tactical_factory = getattr(self, 'tactical_factory', None) if not partial else None
+        if tactical_factory and not choice_backend:
+            raise ValueError('tactical combat requires the separate local choice menu controller')
+        if (choice_backend or tactical_factory) and getattr(self, 'online_factory', None):
+            raise ValueError('External menu learning cannot share online CNN PPO')
+        menus = (choice_backend or NeuralMenuController)(
+            recorder, output_directory=directory / "macro-actions", seed=self.seed)
+        tactical_actor = tactical_factory(recorder, output_directory=directory / 'tactics', seed=self.seed) if tactical_factory else None
+        def collection_errors():
+            from playmodel.games.brotato.laya_menu import CNN_EXCLUSION
+            return [reason for reason in recorder.rejection_reasons
+                    if not (choice_backend and reason in (CNN_EXCLUSION, 'mixed_control_excluded_from_cnn_ppo'))]
         online = None
         if split == 'train' and not partial and getattr(self, 'online_factory', None):
             online = self.online_factory(recorder, checkpoint=checkpoint, root=self.root,
@@ -539,16 +556,52 @@ class LocalCycle:
         trials, segments = [], []
         death_evidence = None
         started = time.perf_counter()
+        observation_wait_seconds = 0.0
+        observation_gaps = []
+        exclude_next_terminal = False
+
+        def observation_gap(proof):
+            nonlocal recorder, exclude_next_terminal
+            if proof['reason'] == 'observation_resumed':
+                # A verified menu pair starts a new decision interval. Combat
+                # resumed within a wave still has an unobserved action gap.
+                exclude_next_terminal = proof['scene'] == 'combat'
+                observation_gaps.append(proof)
+                return
+            if menus.pending_decision is not None or menus.awaiting_application:
+                menus.abort('Observation recovery encountered an unresolved menu decision')
+            if choice_backend:
+                menus.discard_interrupted_outcome()
+            previous_build = deepcopy(recorder.build_state)
+            recorder.abort(directory / ('observation-history-' + uuid.uuid4().hex),
+                           'released observation gap excluded from learning and evaluation')
+            recorder = FullRunRecorder(model, run_id, split=split)
+            recorder.build_state = previous_build
+            if choice_backend:
+                from playmodel.games.brotato.laya_menu import CNN_EXCLUSION
+                recorder.invalidate(CNN_EXCLUSION)
+            menus.recorder = recorder
+            exclude_next_terminal = True
+            observation_gaps.append(proof)
+
+        def observation_status(phase):
+            if self.status:
+                self.status.update(status='running', phase=phase,
+                                   recorded_transitions=len(recorder.records))
 
         def combat_runner(executable, output_root, *, policy=None, config, **kwargs):
-            nonlocal death_evidence, recorder
+            nonlocal death_evidence, recorder, exclude_next_terminal
             kwargs.pop("vision_factory", None)
             first_action = self._training_combat_callback(run_id=run_id, split=split, tag=tag, partial=partial)
             if first_action is not None:
                 kwargs['first_action_callback'] = first_action
             if online is not None:
                 kwargs['online_session'] = online
-            if online is not None or partial:
+            if choice_backend:
+                kwargs['mixed_control'] = True
+            if tactical_actor is not None:
+                kwargs['combat_actor'] = tactical_actor
+            if online is not None or partial or choice_backend:
                 kwargs.update(scheduling_recovery=True, recovery_only=partial)
             if self.status:
                 self.status.update(phase="combat", recorded_transitions=len(recorder.records))
@@ -559,6 +612,15 @@ class LocalCycle:
                 split=split, chunk_steps=32, burn_in=8, **kwargs)
             trials.append(result)
             result["training_performed"] = False
+            if (choice_backend or partial) and result.get('observation_transition'):
+                transition = safe_observation_transition(result)
+                if transition is None or transition != result['observation_transition']:
+                    raise ValueError('Released observation transition evidence changed')
+                observation_gap({'reason': 'screen_changed', **transition})
+                result.update(status='observation_wait',
+                    choice_learning={'status': 'excluded', 'reason': 'unverified_observation_boundary'})
+                observation_status('waiting_observation')
+                return result
             if online is not None:
                 recorder = online.recorder
                 if menus.pending_decision is not None or menus.awaiting_application:
@@ -575,8 +637,16 @@ class LocalCycle:
                     self.status.update(phase='menu', online_learning=online_progress(),
                                        last_combat_outcome=result.get('terminal_kind'))
                 return result
-            if partial and result.get('recovery_only'):
-                accepted = (result.get('recovery_completed') is True
+            observation_gap_terminal = exclude_next_terminal
+            mixed_gap = bool(choice_backend and (result.get('scheduling_recoveries') or observation_gap_terminal))
+            if mixed_gap:
+                if menus.pending_decision is not None or menus.awaiting_application:
+                    menus.abort('Combat recovery encountered an unresolved menu decision')
+                menus.discard_interrupted_outcome()
+                result['choice_learning'] = {'status': 'excluded', 'reason': 'released_combat_gap'}
+            if (partial and result.get('recovery_only')) or mixed_gap or observation_gap_terminal:
+                accepted = ((result.get('recovery_completed') is True or
+                             (observation_gap_terminal and result.get('verified_terminal_boundary') is True))
                             and result.get('reason') in ('terminal_wave_clear', 'terminal_death')
                             and not result.get('error'))
                 if accepted:
@@ -585,30 +655,58 @@ class LocalCycle:
                     previous_build = deepcopy(recorder.build_state)
                     recorder.abort(directory / ('recovery-history-' + uuid.uuid4().hex),
                                    'interrupted recovery history excluded from learning and evaluation')
-                    recorder = FullRunRecorder(model, run_id, split='evaluation')
+                    recorder = FullRunRecorder(model, run_id, split=split)
                     recorder.build_state = previous_build
+                    if mixed_gap:
+                        from playmodel.games.brotato.laya_menu import CNN_EXCLUSION
+                        recorder.invalidate(CNN_EXCLUSION)
                     menus.recorder = recorder
+                    exclude_next_terminal = False
                     if result.get('terminal_kind') == 'death':
                         death_evidence = json.loads((Path(result['session_directory']) / 'terminal.json').read_text(encoding='utf-8'))
                 else:
                     recorder.invalidate('partial recovery combat rejected: ' + str(result.get('reason')))
                 result['status'] = 'neural_rollout_ready' if accepted else 'aborted'
                 return result
-            if not result.get("rollout_eligible") or not result.get("flat_rollout_path"):
+            if tactical_actor is not None:
+                if result.get('verified_terminal_boundary') is not True or result.get('error'):
+                    recorder.invalidate('tactical combat rejected: ' + str(result.get('reason')))
+                    result['status'] = 'aborted'
+                    return result
+                # Only provenance enters the full-run audit. There is no CNN
+                # probability, value, hidden tensor, or fabricated PPO step.
+                _save_json(directory / ('tactical-segment-' + uuid.uuid4().hex + '.json'), {
+                    'report_path': str(Path(result['session_directory']) / 'report.json'),
+                    'report_sha256': _file_sha(Path(result['session_directory']) / 'report.json'),
+                    'cnn_training_eligible': False, 'game_application_verified': False})
+            elif not result.get("rollout_eligible") or not result.get("flat_rollout_path"):
                 recorder.invalidate("combat segment rejected: " + str(result.get("reason")))
                 result["status"] = "aborted"
                 return result
-            recorder.append_combat_report(result)
-            count = int(result['steps'])
-            accepted = recorder.records[-count:]
-            if accepted:
-                result['actual_movement_interval_ns'] = [accepted[0]['evidence']['sent_at_ns'],
-                                                        accepted[-1]['evidence']['sent_at_ns']]
+            else:
+                recorder.append_combat_report(result)
+                count = int(result['steps'])
+                accepted = recorder.records[-count:]
+                if accepted:
+                    result['actual_movement_interval_ns'] = [accepted[0]['evidence']['sent_at_ns'],
+                                                            accepted[-1]['evidence']['sent_at_ns']]
             if self.status:
                 self.status.update(phase="menu", recorded_transitions=len(recorder.records),
                                    last_combat_outcome=result.get("terminal_kind"))
             if result.get("terminal_kind") == "death":
                 death_evidence = json.loads((Path(result["session_directory"]) / "terminal.json").read_text(encoding="utf-8"))
+            if choice_backend and result.get('reason') in ('terminal_wave_clear', 'terminal_death'):
+                callback = getattr(self, 'terminal_callback', None)
+                if callback is not None:
+                    terminal_path = Path(result['session_directory']) / 'terminal.json'
+                    terminal = json.loads(terminal_path.read_text(encoding='utf-8'))
+                    result['choice_learning'] = callback(result['terminal_kind'], {
+                        **terminal, 'run_id': run_id,
+                        'path': str(terminal_path.resolve()), 'sha256': _file_sha(terminal_path),
+                        'terminal_path': str(terminal_path.resolve()),
+                        'terminal_sha256': _file_sha(terminal_path),
+                        'report_path': str((terminal_path.parent / 'report.json').resolve()),
+                        'report_sha256': _file_sha(terminal_path.parent / 'report.json')})
             result["status"] = "neural_rollout_ready"
             return result
 
@@ -616,16 +714,24 @@ class LocalCycle:
         verified_result = False
         stop_category = "completed"
         try:
-            while time.perf_counter() - started < self.max_run_seconds and death_evidence is None:
-                remaining = self.max_run_seconds - (time.perf_counter() - started)
+            while (time.perf_counter() - started - observation_wait_seconds < self.max_run_seconds
+                   and death_evidence is None):
+                remaining = self.max_run_seconds - (time.perf_counter() - started - observation_wait_seconds)
                 if remaining < 10 or self.stop_file.exists():
                     break
                 report = run_session(self.executable, directory / "segments", waves=10,
                     seconds=min(600, remaining), stop_file=self.stop_file, ocr_script=self.ocr_script,
                     record=True, edit=False, run_context=context, combat_runner=combat_runner,
-                    neural_menu=menus)
+                    neural_menu=menus, observation_recovery=bool(choice_backend or partial),
+                    observation_gap_callback=observation_gap if choice_backend or partial else None,
+                    observation_status_callback=observation_status)
                 segments.append(report["session_directory"])
                 context = report.get("run_context", context)
+                wait_duration = report.get('observation_wait_seconds', 0.0)
+                if (type(wait_duration) not in (float, int) or not math.isfinite(wait_duration)
+                        or wait_duration < 0):
+                    raise ValueError('Invalid input-free observation duration')
+                observation_wait_seconds += wait_duration
                 if report.get('release_error') or (report.get('recording') or {}).get('error'):
                     raise OSError('Session input release or recording completion failed')
                 if death_evidence is not None:
@@ -635,7 +741,11 @@ class LocalCycle:
                         and not report.get('error')):
                     verified_result = True
                     break
-                if recorder.rejection_reasons or report["reason"] not in ("wave_limit", "segment_limit", "menu_limit"):
+                waiting_segment = (report.get('observation_wait_segment') is True
+                    and report['reason'] in ('awaiting_game_resume', 'waiting_observation')
+                    and context.get('observation_wait') and (choice_backend or partial))
+                if collection_errors() or (report["reason"] not in ("wave_limit", "segment_limit", "menu_limit")
+                                           and not waiting_segment):
                     failure = "session stopped: " + str(report["reason"])
                     break
             if online is not None:
@@ -646,6 +756,20 @@ class LocalCycle:
                           'note': 'versioned fragments train independently; aggregate is not a fixed-policy PPO trajectory'}
                 if not frozen['full_run_complete']:
                     stop_category = 'user_stop' if self.stop_file.exists() else 'runtime_error'
+            elif choice_backend:
+                complete = bool(death_evidence is not None and not failure and not collection_errors())
+                frozen = recorder.abort(directory / 'trajectory', 'separate Laya choices excluded from CNN PPO')
+                audit_recorded_steps = frozen.get('steps', 0)
+                frozen.update(schema='playmodel.laya-run.v1', full_run_complete=complete,
+                              training_eligible=False, evaluation_score_eligible=False,
+                              cnn_training_eligible=False, audit_recorded_steps=audit_recorded_steps,
+                              steps=sum(r.get('total_actual_steps', r.get('steps', 0)) for r in trials),
+                              combat_attempt_reports=[path for r in trials for path in r.get('attempt_reports', [])],
+                              menu_choice_backend='local_laya',
+                              combat_actor='local_laya_tactics' if tactical_actor is not None else 'frozen_cnn_gru',
+                              choice_updates=[r['choice_learning'] for r in trials if 'choice_learning' in r])
+                if not complete:
+                    stop_category = 'user_stop' if self.stop_file.exists() else 'runtime_error' if failure else 'time_budget'
             elif partial and ((death_evidence is not None and not recorder.rejection_reasons) or verified_result):
                 verified_result = True
                 frozen = recorder.abort(directory / 'trajectory', 'partial recovery reached a verified ending; excluded history')
@@ -681,6 +805,8 @@ class LocalCycle:
             "setup_conditions": {key: context.get(key) for key in
                 ("character", "character_slot", "weapons", "difficulty", "endless_verified")},
             "elapsed_seconds": time.perf_counter() - started,
+            "observation_wait_seconds": observation_wait_seconds,
+            "observation_gaps": observation_gaps,
             "combat_intervals_ns": [row['actual_movement_interval_ns'] for row in trials
                                     if row.get('actual_movement_interval_ns')],
             "contact_projectile_damage_attribution": "not_implemented",
@@ -826,9 +952,14 @@ def _runtime_contract(root):
     worker = 'src/playmodel/learning/recurrent_training_worker.py'
     hashes[worker] = _file_sha(root / worker)
     for filename in ('src/playmodel/learning/online_ppo.py',
-                     'src/playmodel/games/brotato/online_runtime.py', 'scripts/run_online_learning.py'):
+                     'src/playmodel/games/brotato/online_runtime.py', 'scripts/run_online_learning.py',
+                       'src/playmodel/games/brotato/laya_menu.py', 'scripts/run_laya_learning.py',
+                       'src/playmodel/games/brotato/tactical_runtime.py',
+                       'src/playmodel/games/brotato/tactical_state.py'):
         if (root / filename).is_file():
             hashes[filename] = _file_sha(root / filename)
+    for filename in sorted((root / 'src/playmodel/laya').glob('*.py')):
+        hashes[str(filename.relative_to(root))] = _file_sha(filename)
     return hashes
 
 

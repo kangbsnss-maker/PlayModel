@@ -27,6 +27,10 @@ class Frame:
     available_at_ns: int
 
 
+class _CaptureClosed(EOFError):
+    """Pipe ended after this owner explicitly requested child termination."""
+
+
 class _FreshCaptureRequests:
     """One monotonic request, never a backlog or a second capture worker."""
     def __init__(self):
@@ -67,6 +71,7 @@ class CaptureStream:
         self._lock = threading.Lock()
         self._latest = None
         self.error = None
+        self._intentional_close = threading.Event()
         self.frames_received = 0
         self._requests = _FreshCaptureRequests()
         self.fresh_requests_sent = 0
@@ -105,6 +110,8 @@ class CaptureStream:
         while len(data) < length:
             part = self.process.stdout.read(length - len(data))
             if not part:
+                if self._intentional_close.is_set():
+                    raise _CaptureClosed()
                 raise EOFError("Capture worker ended")
             data.extend(part)
         return bytes(data)
@@ -121,6 +128,8 @@ class CaptureStream:
                 with self._lock:
                     self._latest = frame
                     self.frames_received += 1
+        except _CaptureClosed:
+            return
         except (EOFError, OSError, ValueError) as error:
             detail = self.process.stderr.read(16384).decode("utf-8", errors="replace") if isinstance(error, EOFError) else ""
             self.error = str(error) + (": " + detail.strip() if detail else "")
@@ -135,7 +144,8 @@ class CaptureStream:
     def close(self):
         self._requests.close()
         requested_termination = self.process.poll() is None
-        if self.process.poll() is None:
+        if requested_termination:
+            self._intentional_close.set()
             self.process.terminate()
         try:
             self.process.wait(timeout=2)

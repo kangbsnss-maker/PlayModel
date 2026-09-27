@@ -244,6 +244,8 @@ class FullRunTests(unittest.TestCase):
         import contextlib
         import io
         import json
+        from unittest.mock import patch
+        from playmodel.instance import session_lock
         specification = importlib.util.spec_from_file_location("cycle_continuous_test_module",
             Path(__file__).resolve().parents[1] / "scripts/run_recurrent_cycle.py")
         module = importlib.util.module_from_spec(specification)
@@ -267,7 +269,11 @@ class FullRunTests(unittest.TestCase):
         checkpoint = self.root / "synthetic-checkpoint"
         checkpoint.write_bytes(b"not loaded by fake orchestration")
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        # Exercise a real lock in the fixture directory, never contend with a
+        # user's running game worker while testing the fake orchestration.
+        with patch('playmodel.instance.session_lock',
+                   side_effect=lambda _path: session_lock(self.root / 'synthetic-worker.lock')), \
+                contextlib.redirect_stdout(output):
             code = module.main([str(checkpoint), "--continuous", "--device", "cpu",
                                 "--output", str(self.root / "continuous")])
         summary = json.loads(output.getvalue())

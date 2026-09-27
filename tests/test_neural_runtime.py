@@ -312,6 +312,31 @@ class NeuralRuntimeTests(unittest.TestCase):
         self.assertEqual(sink.transport_attempts[0]['background_stages'],
                          sink.background.last_movement_timing)
 
+    def test_typed_no_post_deadline_preserves_hidden_action_and_pending_records(self):
+        from playmodel.games.brotato.background import BackgroundController, PrePostMovementDeadline
+        action, sink = self.action_and_sink()
+        background = object.__new__(BackgroundController)
+        background.held, background._key, background.check = {0x57}, Mock(), Mock()
+        sink.background = background
+        sink.previous_action = 7
+        old_hidden = sink.hidden.clone()
+        # transport starts10, identity starts11 and completes30 after deadline25.
+        with patch('playmodel.games.brotato.neural_runtime.time.perf_counter_ns', side_effect=[10, 11, 30, 31]):
+            with self.assertRaises(PrePostMovementDeadline):
+                sink.send(action, generation=2, observation_sequence=1, deadline_ns=25)
+        attempt = sink.transport_attempts[-1]
+        self.assertIs(attempt['transmitted'], False)
+        self.assertEqual(attempt['delivery_certainty'], 'definitely_not_sent')
+        self.assertEqual(attempt['cancellation_proof'], attempt['background_stages'])
+        self.assertEqual(sink.sent_count, 0)
+        self.assertEqual(sink.previous_action, 7)
+        self.assertTrue(torch.equal(sink.hidden, old_hidden))
+        self.assertEqual(sink.packets, [])
+        self.assertTrue(sink.writer.pending.empty())
+        self.assertEqual(background.held, {0x57})
+        background.release()
+        self.assertEqual(background.held, set())
+
     def test_transport_error_preserves_unknown_attempt_and_excludes_rollout(self):
         def fail_after_possible_partial_input():
             raise OSError('partially posted input cannot be confirmed')

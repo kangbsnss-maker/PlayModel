@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Laya는 어떻게 판단하고 배우나요? · PlayModel</title>
+  <style>
+    :root{--ink:#182638;--muted:#536273;--paper:#f6f7f4;--line:#d9e0e6;--blue:#244fac;--blue-light:#edf3ff;--green:#17664e;--green-light:#eaf6ef;--amber:#80511a;--amber-light:#fff5df;--radius:18px}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif;line-height:1.75;word-break:keep-all}a{color:var(--blue);text-underline-offset:4px}button{font:inherit}button,a,summary{touch-action:manipulation}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #b55500;outline-offset:4px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.5}.skip{position:absolute;left:16px;top:-100px;padding:10px;background:white;z-index:3}.skip:focus{top:12px}
+    .wrap{width:min(1120px,calc(100% - 40px));margin:auto}header{padding:58px 0 35px;border-bottom:1px solid var(--line)}.eyebrow{font-size:12px;font-weight:750;letter-spacing:.16em;color:var(--blue)}h1{font-size:clamp(30px,4.7vw,52px);line-height:1.24;letter-spacing:-.045em;margin:19px 0}h2{font-size:clamp(23px,3vw,30px);line-height:1.35;letter-spacing:-.03em;margin:0 0 15px}h3{font-size:18px;line-height:1.45;margin:0 0 8px}p{margin:0 0 14px}.lead{font-size:19px;max-width:800px;color:#34465b}.badge{display:inline-block;font-size:13px;font-weight:650;padding:5px 11px;border-radius:7px;background:var(--green-light);color:var(--green)}nav{display:flex;gap:10px 24px;flex-wrap:wrap;margin-top:22px;font-size:14px}main{padding-bottom:30px}section{padding:38px 0;border-bottom:1px solid var(--line)}.intro{max-width:820px;color:var(--muted)}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{padding:25px;background:white;border:1px solid var(--line);border-radius:var(--radius)}.card.fixed{border-top:4px solid #6a7b8d}.card.learning{border-top:4px solid var(--blue)}.tag{font-size:12px;font-weight:750;color:var(--muted);letter-spacing:.08em;margin-bottom:10px}.learning .tag{color:var(--blue)}.small{font-size:14px;color:var(--muted)}.note{padding:17px 20px;border-left:3px solid var(--blue);background:var(--blue-light);border-radius:0 10px 10px 0;margin-top:20px}.note p:last-child{margin:0}
+    .flow{list-style:none;counter-reset:steps;display:grid;grid-template-columns:repeat(4,1fr);gap:14px;padding:0;margin:23px 0}.flow li{counter-increment:steps;background:white;border:1px solid var(--line);border-radius:14px;padding:18px;position:relative}.flow li::before{content:counter(steps,decimal-leading-zero);display:block;font-size:12px;font-weight:750;color:var(--blue);letter-spacing:.1em;margin-bottom:9px}.flow strong{display:block;font-size:16px;margin-bottom:6px}.flow span{font-size:14px;color:var(--muted)}.flow .train{background:var(--blue-light);border-color:#b4c8ef}.flow .confirm{background:var(--green-light);border-color:#bddacb}.cycle-caption{font-size:14px;color:var(--blue);font-weight:650}.timeline{display:flex;align-items:stretch;gap:10px;margin-top:22px;flex-wrap:wrap}.timeline span{background:white;border:1px solid var(--line);border-radius:9px;padding:11px 16px}.timeline b{align-self:center;color:var(--muted)}
+    .demo{background:white;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-top:22px}.demo-head{padding:20px 25px;background:var(--amber-light);border-bottom:1px solid #ecdabb}.demo-head .tag{color:var(--amber);margin:0}.demo-body{display:grid;grid-template-columns:1.1fr 1fr;gap:30px;padding:25px}.demo-options{list-style:none;padding:0;margin:0}.option{padding:12px 0;border-bottom:1px solid #edf0f3}.option:last-child{border:0}.option-top{display:flex;justify-content:space-between;gap:10px;align-items:center}.option-name{font-weight:650}.pct{font-variant-numeric:tabular-nums;color:var(--blue)}.track{height:9px;border-radius:10px;background:#e8edf4;margin:9px 0 0;overflow:hidden}.bar{height:100%;background:var(--blue);transition:width .3s ease}.picked .option-name::after{content:" · 선택됨";color:var(--green);font-size:12px}.controls{display:flex;flex-wrap:wrap;gap:9px;margin:17px 0}.btn{border:1px solid var(--line);border-radius:9px;padding:10px 14px;background:white;color:var(--ink);font-size:14px;font-weight:650;min-height:44px}.btn:hover:enabled{background:#f0f4fa}.primary{background:var(--blue);color:white;border-color:var(--blue)}.primary:hover:enabled{background:#173d8f}.positive{color:var(--green);border-color:#a4c6b7}.negative{color:#9b352d;border-color:#dfb9b5}.demo-status{min-height:100px;padding:15px;background:#f5f7fa;border-radius:10px;font-size:15px}.version{font-variant-numeric:tabular-nums;font-size:13px;color:var(--blue);font-weight:650}.math{font-family:ui-monospace,Consolas,monospace;font-size:13px;overflow-wrap:anywhere;word-break:normal}.facts{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:20px 0}.fact{padding:20px;border-radius:13px;background:white;border:1px solid var(--line)}.fact b{display:block;font-size:34px;color:var(--blue);line-height:1.3;margin:5px 0}.fact span{font-size:14px;color:var(--muted)}.status-note{background:var(--amber-light);color:#694214;padding:17px 20px;border-radius:12px}.checks{padding-left:22px;margin:12px 0}.checks li{margin:8px 0}details{background:white;border:1px solid var(--line);border-radius:12px;margin:12px 0;padding:0 20px}summary{font-weight:650;cursor:pointer;padding:16px 0;min-height:52px}details[open] summary{border-bottom:1px solid #edf0f3;margin-bottom:15px}details p:last-child{margin-bottom:18px}code{background:#edf0f4;border-radius:4px;padding:2px 5px;font-size:.88em;overflow-wrap:anywhere}footer{padding:28px 0 45px;font-size:13px;color:var(--muted)}.revision{word-break:break-all}.sources{display:flex;flex-wrap:wrap;gap:12px 24px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    @media(max-width:760px){header{padding-top:34px}.grid2,.demo-body{grid-template-columns:1fr}.flow{grid-template-columns:repeat(2,1fr)}.demo-body{gap:20px}.facts{gap:8px}.fact{padding:13px}.fact b{font-size:30px}.timeline{font-size:14px}.timeline span{padding:8px 10px}section{padding:29px 0}}
+    @media(max-width:420px){.wrap{width:calc(100% - 28px)}.flow{grid-template-columns:1fr}.card,.demo-body,.demo-head{padding:19px}.facts{grid-template-columns:1fr}.fact{display:flex;align-items:center;gap:14px}.fact b{margin:0}.fact span{flex:1}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.bar{transition:none}}
+    @media print{body{background:white}.wrap{width:100%}header,section{padding:20px 0}.controls,nav,.skip{display:none}.card,.flow li,.fact{break-inside:avoid}details{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#content">본문으로 건너뛰기</a>
+<header class="wrap">
+  <div class="eyebrow">PLAYMODEL / LOCAL DECISION LEARNING</div>
+  <h1>Laya는 어떻게<br>판단하고 배우나요?</h1>
+  <p class="lead">화면에서 읽은 상황과 선택지를 신경망에 넣고, 선택의 실제 결과를 바탕으로 <strong>판단 head의 가중치</strong>를 바꿉니다.</p>
+  <span class="badge">로컬 모델 실행 확인</span>
+  <nav aria-label="페이지 목차"><a href="#roles">누가 무엇을 하나요</a><a href="#flow">판단에서 학습까지</a><a href="#demo">확률 실험</a><a href="#evidence">현재 검증 범위</a><a href="#local">로컬 실행</a></nav>
+</header>
+<main id="content" class="wrap">
+  <section id="roles" aria-labelledby="roles-title">
+    <h2 id="roles-title">Laya가 전술을 고르고, 최신 화면으로 이동합니다.</h2>
+    <div class="grid2">
+      <article class="card fixed"><div class="tag">MOVEMENT · 최신 관측</div><h3>CPU 이동 계산</h3><p>여러 화면에서 위험 후보의 상대 위치·속도·접근·교차를 추정합니다. 선택한 전술을 최신 위치에 맞춰 방향키 입력으로 바꿉니다. 모델 응답을 기다리며 이동을 멈추지 않습니다.</p><p class="small">추적·방향 계산은 현재 규칙 기반입니다. 새 Laya 전투 경로에서 CNN+GRU를 학습한 것처럼 기록하지 않습니다.</p></article>
+      <article class="card learning"><div class="tag">TACTICS + MENU · HEAD 학습</div><h3>Laya</h3><p>상황별 접근·후퇴·거리 유지·선회·교차 회피 후보와 성장·상점 후보를 고릅니다. ModernBERT encoder는 고정하고, 후보를 평가하는 판단 head를 학습합니다.</p><p class="small">Laya도 가중치 기반 신경망입니다. 순간 선택과 결과 기반 가중치 갱신을 함께 사용합니다.</p></article>
+    </div>
+    <p class="note">Laya와 Jev는 정해진 선택 형식으로 답한다는 공통점이 있습니다. <strong>같은 모델·구현·성능이라는 뜻은 아닙니다.</strong></p>
+  </section>
+  <section id="tactics" aria-labelledby="tactics-title">
+    <h2 id="tactics-title">상황이 바뀌면 선택지도 바뀝니다.</h2>
+    <p class="intro">같은 방향을 반복하는 대신, 관측 상태로 후보를 만들고 Laya가 고릅니다. 아래는 구현한 전술의 개념 설명이며 실제 게임 화면이나 학습 성적이 아닙니다.</p>
+    <div class="grid2">
+      <article class="card"><h3>접근하는 위험 후보</h3><p>상대 속도와 가장 가까워질 위치를 추정합니다. 뒤로 빠지기·좌우 선회·접근 경로 벗어나기가 후보가 됩니다. 작고 빠른 물체도 추적하지만 미사일이라고 확정하지 않습니다.</p></article>
+      <article class="card"><h3>가까이 공격할지, 거리 둘지</h3><p>관측한 근접·원거리 피해량, 속도, 방어, 회피, 재생, 공격 속도로 거리 선호를 조정합니다. 접근·거리 유지·거리를 벌리며 이동 같은 후보가 달라집니다.</p></article>
+      <article class="card"><h3>움직임 패턴 변화</h3><p>여러 화면에서 접근·교차·선회 가설을 갱신합니다. 좌표만 달라져도 이동 방향은 다시 계산합니다. 후보 전체의 의미가 바뀌면 이전 Laya 응답을 버립니다.</p></article>
+      <article class="card"><h3>관측의 한계</h3><p>몬스터 종류·발사 주체·공격 주기·실제 무기 사거리·현재 숫자 HP는 아직 확정 인식하지 못합니다. 화면 거리와 Range 능력치를 같은 단위로 취급하지 않습니다. 정확한 공격 패턴 학습에는 검증된 탐지 자료가 더 필요합니다.</p></article>
+    </div>
+    <div class="timeline" aria-label="비동기 전술 흐름"><span>최신 화면 → 추적·후보</span><b aria-hidden="true">→</b><span>별도 Laya 추론</span><b aria-hidden="true">→</b><span>유효한 전술만 채택</span><b aria-hidden="true">→</b><span>최신 화면으로 이동 계산</span></div>
+    <p class="note">유효한 새 판단이 없으면 명시적인 규칙 이동을 사용합니다. 후보·모델 버전·전투 식별자·시간 제한을 함께 검사합니다. 기본 750ms 요청 간격과 1.5초 유효기간은 초기 설정이며 최적값으로 측정된 수치가 아닙니다.</p>
+    <p class="small">2026년 9월 27일 후속 실행에서 실제 전술 제어 → 독립 전투 결과 → head 갱신 → 새 버전 제어를 확인했습니다. 사람 선호도 revision의 안전 경계 적용도 확인했습니다. 최신 누적 수치는 프로그램의 학습 도표에서 봅니다. 생존 능력 향상은 아직 입증하지 않았습니다.</p>
+  </section>
+  <section id="flow" aria-labelledby="flow-title">
+    <h2 id="flow-title">한 번의 선택이 다음 선택을 바꾸는 과정</h2>
+    <p class="intro">모델은 화면을 직접 조작하지 않습니다. 프로그램이 관측과 후보를 준비하고, 입력 전후의 검증을 담당합니다.</p>
+    <ol class="flow" aria-label="판단과 학습의 여덟 단계">
+      <li><strong>화면 캡처 · 로컬 OCR</strong><span>화면·텍스트·관측 시각을 보존합니다. 읽지 못한 값은 unknown으로 남깁니다.</span></li>
+      <li><strong>상황 + 유효한 선택지</strong><span>관측한 능력치·보유 무기·재화와 현재 선택 가능한 후보만 묶습니다.</span></li>
+      <li><strong>ModernBERT encoder</strong><span>텍스트를 신경망 표현으로 바꿉니다. 현재 실험에서는 이 가중치를 고정합니다.</span></li>
+      <li class="train"><strong>판단 head → 선택 확률</strong><span>후보별 확률을 계산하고 실제로 하나를 표본추출합니다. 선택과 모델 버전을 기록합니다.</span></li>
+      <li class="confirm"><strong>실제 제어 증거</strong><span>메뉴는 화면 반영까지 검사합니다. 전술은 실제 키 전송 또는 이미 보유한 키 유지 증거를 남깁니다. 이를 게임 반영 확인으로 부풀리지 않습니다.</span></li>
+      <li class="confirm"><strong>독립적으로 확인한 결과</strong><span>다음 전투의 wave_clear는 +1, death는 −1. 클릭 성공 자체에는 좋은 선택 보상을 주지 않습니다.</span></li>
+      <li class="train"><strong>Head REINFORCE 학습</strong><span>실제 선택 확률과 시간 할인한 결과로 판단 가중치를 갱신합니다. 자기 선택을 정답으로 복사하지 않습니다.</span></li>
+      <li class="train"><strong>검사 → 저장 → 다음 선택</strong><span>확률 변화·수치·encoder 불변·재로딩을 검사합니다. 통과한 새 버전을 다음 선택에 사용합니다.</span></li>
+    </ol>
+    <p class="cycle-caption">08 → 01 · 새 상황을 다시 관측하고, 갱신한 head로 다음 후보를 고릅니다.</p>
+    <div class="timeline" aria-label="실행 순서"><span>전투 이동</span><b aria-hidden="true">→</b><span>전투 결과 확인</span><b aria-hidden="true">→</b><span>대기하며 Laya 학습</span><b aria-hidden="true">→</b><span>다음 메뉴 선택</span></div>
+    <p class="small" style="margin-top:12px">전투 중 Laya 판단 추론과 CPU 이동은 비동기로 진행합니다. 가중치 학습은 독립적으로 확인한 전투 결과 뒤에 진행합니다. optimizer까지 전투와 동시에 실행하는 구조는 아닙니다.</p>
+    <details><summary>어떤 기록은 학습에서 제외하나요?</summary><p>미확인 입력·적용 실패·사용자 중지·알 수 없는 결과를 정답이나 사망 보상으로 쓰지 않습니다. 제한 복구로 전투가 끊기면 앞선 메뉴 선택을 그 전투 결과로 학습하지 않고 원본 기록을 보존합니다.</p><p>이 실험의 자료는 학습용입니다. Laya가 개입한 기록은 CNN PPO와 독립 평가 점수에서 제외합니다.</p></details>
+  </section>
+  <section id="human" aria-labelledby="human-title">
+    <h2 id="human-title">사람이 판단을 교정하고, 근거를 남깁니다.</h2>
+    <p>프로그램의 <strong>학습 도표 · 사람 전술 선호도 · 판단 근거</strong> 버튼에서 실제 기록을 봅니다. 완료 판수·진행 중인 판·판단 수·실제 제어 수·학습에 사용된 판단 수를 구분합니다.</p>
+    <div class="grid2"><article class="card"><h3>수정하는 값</h3><p>접근·후퇴·선회 같은 전술별 선호도(logit bias)를 −2부터 2까지 조절합니다. 신경망 head 가중치는 별도로 보존합니다. 수정 이유와 연결한 판단 기록도 남깁니다.</p><p class="math">실제 선택 분포 = softmax(신경망 점수 + 사람 선호도)</p><p class="small">선호도는 확률이나 배율이 아닙니다. 값이 1이라고 확률 100%나 2배를 뜻하지 않습니다.</p></article><article class="card"><h3>적용되는 시점</h3><p>저장된 교정은 대기 상태입니다. 현재 선택의 결과 학습을 마친 안전 경계에서 적용하고, 실제 사용된 설정과 모델 버전을 함께 남깁니다.</p><p class="small">화면에는 관측값·기본 확률·보정 후 확률을 보여줍니다. 모델 내부 사고를 읽은 설명은 아닙니다. 사람의 이유 문장은 기록으로 보존하며 자동 보상·정답으로 사용하지 않습니다.</p></article></div>
+  </section>
+  <section id="demo" aria-labelledby="demo-title">
+    <h2 id="demo-title">보상이 선택 확률에 미치는 영향</h2>
+    <p class="intro">아래는 원리를 보여주는 작은 실험입니다. 실제 Laya 모델이나 Brotato를 실행하지 않습니다.</p>
+    <div class="demo">
+      <div class="demo-head"><div class="tag">가상 수치 · 교육용 계산 · 게임 실측 아님</div><p style="margin:5px 0 0">가상의 상점에서 선택을 하나 뽑고, 그 뒤에 관측됐다고 가정할 결과를 눌러 보세요.</p></div>
+      <div class="demo-body">
+        <div><ul class="demo-options" aria-label="가상 후보별 선택 확률">
+          <li class="option" data-option="0"><div class="option-top"><span class="option-name">체력 아이템 구매</span><span class="pct" id="p0">40.0%</span></div><div class="track" aria-hidden="true"><div class="bar" id="b0" style="width:40%"></div></div></li>
+          <li class="option" data-option="1"><div class="option-top"><span class="option-name">무기 구매</span><span class="pct" id="p1">35.0%</span></div><div class="track" aria-hidden="true"><div class="bar" id="b1" style="width:35%"></div></div></li>
+          <li class="option" data-option="2"><div class="option-top"><span class="option-name">재화를 남기고 출발</span><span class="pct" id="p2">25.0%</span></div><div class="track" aria-hidden="true"><div class="bar" id="b2" style="width:25%"></div></div></li>
+        </ul><div class="controls"><button class="btn primary" id="sample" type="button">확률대로 1회 뽑기</button><button class="btn" id="reset" type="button">처음으로</button></div></div>
+        <div><div class="version" id="version">가상 head · v0</div><div class="controls"><button class="btn positive" id="win" type="button" disabled>통과했다고 가정 · +1</button><button class="btn negative" id="loss" type="button" disabled>사망했다고 가정 · −1</button></div><p class="demo-status" id="demo-status" role="status" aria-live="polite" aria-atomic="true">먼저 선택을 뽑으세요. 높은 확률의 후보도 매번 뽑히는 것은 아닙니다.</p></div>
+      </div>
+    </div>
+    <p class="small" style="margin-top:15px">확률은 행동 선호도입니다. 생존 성공 확률이 아닙니다. 한 번의 결과로 선택이 옳거나 틀렸다고 확정할 수도 없습니다.</p>
+    <details><summary>이 실험의 계산과 실제 학습은 어떻게 다른가요?</summary><p>이 페이지는 후보별 점수 세 개를 softmax로 확률로 바꾸고, 선택한 행동의 log 확률에 보상을 곱하는 방향으로 점수를 한 번 움직입니다. 양의 보상은 선택한 후보의 확률을 높이고 음의 보상은 낮춥니다.</p><p class="math">가상 점수 변화 = 0.45 × 보상 × (선택 여부 − 현재 확률)</p><p>0.45는 변화를 보기 쉽게 정한 교육용 수치입니다. 실제 프로그램은 Laya head의 다수 가중치에 역전파·시간 할인·Adam·기울기 제한·확률 변화 검사를 적용합니다. 이 페이지의 변화량을 실제 학습 속도나 성능으로 해석하면 안 됩니다.</p></details>
+    <noscript><p class="status-note">JavaScript가 꺼져 있어 확률 실험은 동작하지 않습니다. 나머지 설명은 그대로 읽을 수 있습니다.</p></noscript>
+  </section>
+  <section id="evidence" aria-labelledby="evidence-title">
+    <h2 id="evidence-title">확인한 것과 아직 확인하지 못한 것</h2>
+    <p class="intro"><time datetime="2026-09-27T21:32:55+09:00">2026년 09월 27일 21:32 KST</time> 이전 메뉴 학습 실행의 검증 기록입니다. 아래 수치는 새 전술 이동의 성적이 아닙니다. 이 페이지는 <strong>고정 기록이며 자동 갱신되지 않습니다.</strong></p>
+    <div class="facts" aria-label="현재 실행의 실제 게임 기록">
+      <div class="fact"><span>실제 Laya 선택</span><b>10</b><span>결정 기록</span></div>
+      <div class="fact"><span>실제 적용 확인</span><b>10</b><span>전송 후 화면 확인</span></div>
+      <div class="fact"><span>게임 결과로 optimizer</span><b>4</b><span>채택된 head 갱신</span></div>
+    </div>
+    <div class="grid2">
+      <article class="card"><h3>로컬 연산 경로 확인</h3><p>실제 영어 체크포인트의 CUDA 합성 입력 검사에서 forward <strong>109.4686ms</strong>를 기록했습니다. Head 가중치 변경, encoder 불변, 저장·재로딩도 확인했습니다.</p><p class="small">특정 합성 검사값입니다. 전체 화면→입력 지연이나 실게임 학습 성공을 뜻하지 않습니다.</p></article>
+      <article class="card"><h3>실게임 학습과 새 버전 적용 확인</h3><p>최초 업데이트는 실제 적용한 선택 <strong>3개</strong>와 독립 확인한 사망 결과를 사용했습니다. Head 변경·encoder 불변·저장·재로딩을 통과했고, 새 버전 선택 <strong>1회</strong>가 게임에 적용됐습니다.</p><p class="small">선택 확률이 바뀌었다는 증거입니다. 더 잘 생존하거나 빠르게 이동한다는 뜻은 아닙니다. 복구 공백의 선택은 기록을 보존하고 학습에서 제외하므로 선택 수와 학습 자료 수가 다를 수 있습니다.</p></article>
+    </div>
+    <p class="status-note" style="margin-top:20px">확인 순서: 실제 선택 → 실제 적용 → 독립 결과 → head 갱신 → 새 버전의 실제 선택. 이동 속도·생존 능력 향상과 전체 자동 플레이 완료는 아직 입증되지 않았습니다.</p>
+  </section>
+  <section id="local" aria-labelledby="local-title">
+    <h2 id="local-title">내 컴퓨터에서 실행할 수 있나요?</h2>
+    <p><strong>예. 이 환경에서는 로컬 설치와 실제 CUDA 모델 실행을 확인했습니다.</strong> 게임 실행·판단·학습에 외부 판단 API나 토큰 과금 서비스가 필요하지 않습니다.</p>
+    <ul class="checks"><li>최초 설치 때 라이브러리와 공개 모델 가중치를 다운로드합니다.</li><li>실행 worker는 <code>HF_HUB_OFFLINE=1</code>, <code>TRANSFORMERS_OFFLINE=1</code>로 로컬 파일을 사용합니다.</li><li>로컬 CPU·GPU·메모리·전력은 사용합니다. 모든 컴퓨터의 속도나 실행 가능성을 보장한 것은 아닙니다.</li><li><code>PlayModel.vbs</code>에서 판단 모델을 <code>laya</code>로 선택해 시작합니다. 안전 중지 버튼과 F8은 기존과 같습니다.</li></ul>
+    <details><summary>공개 모델과 이 프로그램의 구현 구분</summary><p>공개 Laya의 encoder·typed decision 구조를 사용하지만, Brotato 관측·후보 검증·게임 입력·결과 보상·head REINFORCE 학습 연결은 PlayModel의 로컬 구현입니다. 공개 벤치마크 점수를 Brotato 실력으로 옮겨 주장하지 않습니다.</p><p>모델: <code>convaiinnovations/laya</code> · 라이선스: Apache 2.0<br>고정 모델 revision: <code class="revision">55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851</code></p></details>
+    <div class="sources" aria-label="공식 출처와 실행 안내"><a href="https://github.com/NandhaKishorM/laya" target="_blank" rel="noopener noreferrer">Laya 공식 코드 ↗</a><a href="https://huggingface.co/convaiinnovations/laya" target="_blank" rel="noopener noreferrer">Laya 공개 모델 ↗</a><a href="laya.md">프로젝트 실행 안내</a></div>
+    <p class="small" style="margin-top:15px">이 HTML은 CSS·JavaScript를 파일 안에 포함합니다. 설명과 확률 실험은 인터넷 없이 동작합니다. 공식 출처 링크를 열 때는 인터넷이 필요합니다.</p>
+  </section>
+</main>
+<footer class="wrap">PlayModel · 개념 설명과 고정 검증 기록. 이 페이지의 버튼은 게임 입력·모델 학습·네트워크 요청을 실행하지 않습니다.</footer>
+<script>
+  (()=>{
+    'use strict';
+    const names=['체력 아이템 구매','무기 구매','재화를 남기고 출발'];
+    let logits=[Math.log(.4),Math.log(.35),Math.log(.25)],selected=null,version=0;
+    const get=id=>document.getElementById(id),status=get('demo-status');
+    const probs=()=>{const max=Math.max(...logits),ex=logits.map(v=>Math.exp(v-max)),sum=ex.reduce((a,b)=>a+b,0);return ex.map(v=>v/sum);};
+    function render(){probs().forEach((p,i)=>{get('p'+i).textContent=(p*100).toFixed(1)+'%';get('b'+i).style.width=(p*100)+'%';document.querySelector('[data-option="'+i+'"]').classList.toggle('picked',selected===i);});get('version').textContent='가상 head · v'+version;get('win').disabled=get('loss').disabled=selected===null;get('sample').disabled=selected!==null;}
+    get('sample').addEventListener('click',()=>{const p=probs();let n=Math.random();selected=p.length-1;for(let i=0;i<p.length;i++){n-=p[i];if(n<0){selected=i;break;}}status.textContent='“'+names[selected]+'” 선택. 현재 확률 '+(p[selected]*100).toFixed(1)+'%. 이제 그 뒤의 결과를 가정해 보세요.';render();get('win').focus();});
+    function reward(r){if(selected===null)return;const p=probs(),i=selected;logits=logits.map((v,j)=>v+.45*r*((j===i?1:0)-p[j]));version++;const after=probs()[i];status.textContent=(r>0?'통과 +1':'사망 −1')+'을 가정했습니다. “'+names[i]+'” 확률: '+(p[i]*100).toFixed(1)+'% → '+(after*100).toFixed(1)+'%. 교육용 점수 갱신이며 실제 게임 결과가 아닙니다.';selected=null;render();get('sample').focus();}
+    get('win').addEventListener('click',()=>reward(1));get('loss').addEventListener('click',()=>reward(-1));
+    get('reset').addEventListener('click',()=>{logits=[Math.log(.4),Math.log(.35),Math.log(.25)];selected=null;version=0;status.textContent='가상 확률을 처음으로 되돌렸습니다. 실제 모델이나 기록에는 영향을 주지 않습니다.';render();get('sample').focus();});render();
+  })();
+</script>
+</body>
+</html>

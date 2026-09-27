@@ -23,6 +23,11 @@
 
 ## 문서
 
+**Laya 판단 학습:** 로컬 공개 모델이 성장·상점 선택을 담당하고, 확인된 전투 결과로
+판단 head를 갱신하는 별도 실행 경로를 추가했다. 이동 CNN은 고정한다.
+[실행·증거 안내](docs/guides/laya.md), [설계 경계](docs/decisions/0010-local-laya-decisions.md).
+설치·가중치 갱신을 이동 속도나 게임 실력 향상으로 해석하지 않는다.
+
 [전체 학습 커리큘럼: 학습판·평가판·예상 시간](docs/guides/learning-curriculum.html). 단계별 구현 상태와 통과 기준, 영상 제목 구분을 포함합니다.
 
 **수동 실행:** 루트의 `PlayModel.vbs`를 더블 클릭한다. 시작·안전 중지·상태 확인 창을 제공한다. 창을 닫아도 별도 로컬 학습 프로그램은 계속 실행된다. [토큰 없이 실행·재시작하는 가이드](docs/guides/standalone-learning.html).

@@ -41,6 +41,7 @@ class SetupRecoveryTests(unittest.TestCase):
                  patch.object(setup_run, 'session_lock', return_value=nullcontext()), \
                  patch.object(setup_run, 'rows_in_region', side_effect=rows), \
                  patch.object(setup_run, 'classify_scene', return_value=SimpleNamespace(scene='unknown')), \
+                 patch.object(setup_run, 'recognize_main_menu', return_value=False), \
                  patch.object(setup_run, 'focused_tile', return_value=1), \
                  patch.object(setup_run, 'BackgroundController') as controller:
                 result = setup_run.prepare_next(root/'game.exe', root=root, character_slot=1, weapon='SMG', record=False)
@@ -48,3 +49,24 @@ class SetupRecoveryTests(unittest.TestCase):
             self.assertTrue(result['context']['setup_complete'])
             self.assertEqual([call.args[0] for call in controller.return_value.tap_menu.call_args_list],
                              ['escape', 'escape', 'enter', 'enter'])
+
+    def test_main_menu_roi_requires_all_labels_and_selected_start(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'frame.png'
+            pixels = bytearray(1920 * 1080 * 4)
+            offset = (640 * 1920 + 48) * 4
+            pixels[offset:offset+3] = b'\xff' * 3
+            reader = MagicMock()
+            def ocr(words):
+                return {'lines': [{'words': [{'text': word, 'x': 5, 'y': n * 80 + 30,
+                                             'width': 100, 'height': 30}]} for n, word in enumerate(words)]}
+            for words, expected in [(('Start', 'Profile', 'Options', 'Quit'), True),
+                                    (('Start', 'ProfiIe', 'Options', 'Quit'), True),
+                                    (('Start', 'Profile', 'Options'), False)]:
+                reader.read.return_value = ocr(words)
+                self.assertEqual(setup_run.recognize_main_menu(reader, source, {'lines': []},
+                                 pixels, 1920, 1080), expected)
+            pixels[offset:offset+3] = b'\x00' * 3
+            reader.reset_mock()
+            self.assertFalse(setup_run.recognize_main_menu(reader, source, {'lines': []}, pixels, 1920, 1080))
+            reader.read.assert_not_called()

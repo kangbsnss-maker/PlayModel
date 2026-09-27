@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from functools import wraps
+import hashlib
 
 from playmodel.learning import StateEvidence, load_checkpoint
 from .background import BackgroundController
@@ -32,6 +33,49 @@ from playmodel.media_titles import label_recording
 from .fast_menu import fast_navigation
 from .menu_capture import MenuCapture
 from .menu_transition import MenuTransitionGate
+
+
+class _ObservationWaitBudget(Exception):
+    """An input-free observation segment ended; this is not a terminal reward."""
+
+
+class ObservationResumeGate:
+    """Require two independent post-release frames before leaving an input-free wait."""
+    def __init__(self, target_identity, released_at_ns):
+        if (not isinstance(target_identity, dict)
+                or type(target_identity.get('hwnd')) is not int
+                or type(target_identity.get('pid')) is not int
+                or not isinstance(target_identity.get('executable'), str)
+                or not target_identity['executable'] or type(released_at_ns) is not int):
+            raise ValueError('observation recovery requires a complete target identity')
+        self.target_identity = dict(target_identity)
+        self.released_at_ns = released_at_ns
+        self.previous = None
+
+    def observe(self, shot, *, scene, available_at_ns, now_ns):
+        if any(shot.get(key) != value for key, value in self.target_identity.items()):
+            raise OSError('Game identity changed during observation recovery')
+        observed = shot.get('capture_started_at_ns')
+        capture_available = shot.get('available_at_ns')
+        if (scene not in ('combat', 'shop', 'level_up', 'loot', 'death', 'result', 'difficulty')
+                or any(type(value) is not int for value in (observed, capture_available, available_at_ns, now_ns))
+                or not self.released_at_ns < observed <= capture_available <= available_at_ns <= now_ns
+                or now_ns - observed > 500_000_000):
+            self.previous = None
+            return None
+        source = (Path(shot['session_directory']) / 'frame.png').resolve()
+        if hashlib.sha256(source.read_bytes()).hexdigest() != shot.get('frame_sha256'):
+            raise ValueError('Observation recovery source digest mismatch')
+        current = {'scene': scene, 'frame_ref': str(source), 'frame_sha256': shot['frame_sha256'],
+                   'observed_at_ns': observed, 'available_at_ns': available_at_ns}
+        previous = self.previous
+        self.previous = current
+        if (previous is None or previous['scene'] != scene
+                or observed <= previous['available_at_ns'] or source == Path(previous['frame_ref'])):
+            return None
+        return {'schema': 'playmodel.observation-resume.v1', 'target_identity': self.target_identity,
+                'released_at_ns': self.released_at_ns, 'observations': [previous, current],
+                'verified_at_ns': now_ns, 'gap_training_eligible': False}
 
 
 def one_session(function):
@@ -127,7 +171,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 stop_file: Path, ocr_script: Path, checkpoint: Path | None = None,
                 style_path: Path | None = None, record: bool = False, edit: bool = True,
                 learning_queue: Path | None = None, run_context: dict | None = None,
-                combat_runner=None, neural_menu=None) -> dict:
+                combat_runner=None, neural_menu=None, observation_recovery=False,
+                observation_gap_callback=None, observation_status_callback=None) -> dict:
     if not 1 <= waves <= 10 or not 10 <= seconds <= 600:
         raise ValueError("Bounded session requires 1..10 waves and 10..600 seconds")
     if combat_runner is not None and (checkpoint is not None or learning_queue is not None):
@@ -163,6 +208,12 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
     frozen_navigation = FrozenNavigation()
     learning_jobs, candidate_adoptions = [], []
     context = dict(run_context or {})
+    waiting = dict(context['observation_wait']) if context.get('observation_wait') else None
+    resume_gate = (ObservationResumeGate(waiting['target_identity'], waiting['released_at_ns'])
+                   if waiting else None)
+    wait_started = time.perf_counter() if waiting else None
+    observation_wait_seconds = 0.0
+    observation_events = []
     observed_waves = []
     clear_observations = 0
     shop_counts, shop_spend = {}, {}
@@ -192,11 +243,47 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
         if stop_file.exists() or stop_latched.is_set():
             raise OSError("Session stopped")
         if time.perf_counter() >= deadline:
+            if waiting is not None:
+                raise _ObservationWaitBudget()
             raise OSError("Session time limit")
         if recording is not None and recording.error:
             raise OSError('Recording failed: ' + recording.error)
         if controller is not None:
             controller.check()
+            if waiting is not None:
+                user = controller._context
+                if (user.foreground() == controller.hwnd
+                        and any(user.key_state(key) & 0x8000 for key in (0x57, 0x41, 0x53, 0x44))):
+                    raise OSError('Human intervention during observation recovery')
+
+    def wait_for_observation(phase, shot, *, isolate=True):
+        nonlocal waiting, resume_gate, wait_started
+        if waiting is None:
+            if neural_menu is not None and (neural_menu.pending_decision is not None
+                                            or neural_menu.awaiting_application):
+                neural_menu.abort('Observation gap encountered an unresolved menu decision')
+            if pending_shop is not None:
+                raise OSError('Observation gap with an unverified shop transmission')
+            if neural_menu is not None and not observation_recovery:
+                raise OSError('Observation recovery is not enabled for this scored trajectory')
+            controller.release()
+            released = time.perf_counter_ns()
+            target = {key: shot.get(key) for key in ('hwnd', 'pid', 'executable')}
+            resume_gate = ObservationResumeGate(target, released)
+            waiting = {'phase': phase, 'target_identity': target, 'released_at_ns': released}
+            wait_started = time.perf_counter()
+            if isolate and observation_gap_callback is not None:
+                observation_gap_callback({'reason': phase, 'target_identity': target,
+                    'released_at_ns': released, 'source': str(source), 'frame_sha256': shot['frame_sha256'],
+                    'training_eligible': False, 'terminal_reward_verified': False})
+            observation_events.append({'kind': 'wait_started', **waiting})
+        waiting['phase'] = phase
+        context['observation_wait'] = dict(waiting)
+        if observation_status_callback is not None:
+            observation_status_callback(phase)
+        # Bounded input-free polling. STOP/F8 and identity checks run on every
+        # observation; no key can dismiss a pause whose origin is unknown.
+        monitor_stop.wait(.2)
 
     def observe():
         started = time.perf_counter_ns()
@@ -206,7 +293,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
         if (width, height) != (1920, 1080):
             raise ValueError("This menu calibration requires 1920x1080")
         fast = None
-        if neural_menu is not None and not neural_menu.awaiting_application:
+        if neural_menu is not None and waiting is None and not neural_menu.awaiting_application:
             fast = frozen_navigation.propose(neural_menu.pending_decision, shot, pixels,
                                              time.perf_counter_ns())
             if fast is not None:
@@ -215,7 +302,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     'observation_ms': (time.perf_counter_ns()-started)/1e6})
                 (image.parent / 'recognition.json').write_text(json.dumps(asdict(fast)), encoding='utf-8')
                 return shot, image, None, pixels, width, height, fast
-        if fast_model is not None and neural_menu is None:
+        if fast_model is not None and neural_menu is None and waiting is None:
             fast = fast_navigation(fast_model, pixels, width, height, game_build_id=model_build)
             if time.perf_counter_ns() - shot['capture_started_at_ns'] > 500_000_000:
                 fast = None
@@ -226,7 +313,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             return shot, image, None, pixels, width, height, fast
         ocr = menu_reader.read(image)
         check()
-        if (neural_menu is not None and classify_scene(ocr, width=width, height=height).scene == 'shop'
+        if (waiting is None and neural_menu is not None and classify_scene(ocr, width=width, height=height).scene == 'shop'
                 and not re.fullmatch(r'(?:0|[1-9][0-9]{0,4})', ''.join(rows_in_region(ocr, (805, 25, 1020, 110))))):
             from .shop_currency_ocr import read_shop_currency
             currency = read_shop_currency(menu_reader, image, pixels=pixels,
@@ -237,7 +324,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             ocr['available_at_ns'] = max(ocr['available_at_ns'], currency.available_at_ns)
             ocr['recognition_path'] = 'persistent_local_ocr_with_currency_roi'
             check()
-        if (neural_menu is not None and neural_menu.recorder.model.config.context_dim == 64
+        if (waiting is None and neural_menu is not None and neural_menu.recorder.model.config.context_dim == 64
                 and neural_menu.needs_build_observation):
             stats_scene = classify_scene(ocr, width=width, height=height).scene
             if stats_scene in ('shop', 'level_up'):
@@ -276,7 +363,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 controller = BackgroundController(shot["hwnd"], executable)
             elif controller.hwnd != shot["hwnd"]:
                 raise OSError("Game window changed")
-            if not transition_gate.allow(shot['frame_sha256'],
+            if waiting is None and not transition_gate.allow(shot['frame_sha256'],
                                          captured_at_ns=shot['capture_started_at_ns']):
                 continue
             if fast is not None:
@@ -306,6 +393,34 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     'learned_choice': False})
                 continue
             scene = classify_scene(ocr, width=width, height=height).scene
+            if scene == 'pause':
+                if resume_gate is not None:
+                    resume_gate.previous = None
+                wait_for_observation('awaiting_game_resume', shot)
+                continue
+            recovered_vision = None
+            if waiting is not None:
+                resume_scene = scene
+                if scene == 'unknown':
+                    recovered_vision = BrotatoVision().observe(pixels, width, height,
+                        observed_at_ns=shot['capture_started_at_ns'])
+                    last_vision = asdict(recovered_vision)
+                    if recovered_vision.combat_likely and recovered_vision.player is not None:
+                        resume_scene = 'combat'
+                proof = resume_gate.observe(shot, scene=resume_scene,
+                    available_at_ns=max(shot['available_at_ns'], ocr['available_at_ns']),
+                    now_ns=time.perf_counter_ns())
+                if proof is None:
+                    wait_for_observation('waiting_observation', shot)
+                    continue
+                observation_wait_seconds += time.perf_counter() - wait_started
+                observation_events.append({'kind': 'resumed', **proof})
+                waiting = resume_gate = wait_started = None
+                context.pop('observation_wait', None)
+                if observation_gap_callback is not None:
+                    observation_gap_callback({'reason': 'observation_resumed', 'scene': resume_scene, **proof})
+                if observation_status_callback is not None:
+                    observation_status_callback('combat' if resume_scene == 'combat' else 'menu')
             neural_directive = None
             # A partial recovery is never training/evaluation score data. It
             # may finish an unsupported loot screen using the existing rule;
@@ -361,7 +476,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 # Vision already samples a bounded <=240x135 grid. Reducing
                 # this fresh capture first changes the sampling lattice and
                 # can split the white body into equally sized fragments.
-                vision = BrotatoVision().observe(pixels, width, height,
+                vision = recovered_vision or BrotatoVision().observe(pixels, width, height,
                                                   observed_at_ns=shot["capture_started_at_ns"])
                 last_vision = asdict(vision)
                 if not vision.combat_likely or vision.player is None:
@@ -369,8 +484,10 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     from playmodel.execution_log import event
                     event('game_scene_unrecognized', frame_path=str(source), scene=scene,
                           vision=last_vision, observation_attempt=unknown_attempts)
+                    if observation_recovery:
+                        wait_for_observation('waiting_observation', shot)
+                        continue
                     if unknown_attempts <= 3:
-                        # Reobserve without input through short spawn/transition animations.
                         controller.release()
                         continue
                     raise OSError("Unrecognized screen; no action")
@@ -383,7 +500,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     neural_menu.combat_entry(evidence)
                 remaining = deadline - time.perf_counter()
                 if remaining <= 5:
-                    raise OSError("Insufficient remaining session time")
+                    reason = 'segment_limit'
+                    break
                 if learning_queue is not None and policy is not None:
                     ready = ready_candidate(learning_queue, policy.version, style_digest(style))
                     if ready is not None:
@@ -425,6 +543,11 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 if pilot["status"] == "aborted":
                     reason = pilot["reason"]
                     break
+                if pilot['status'] == 'observation_wait':
+                    if not observation_recovery or not pilot.get('observation_transition'):
+                        raise OSError('Unverified observation transition')
+                    wait_for_observation('waiting_observation', shot, isolate=False)
+                    continue
                 if pilot["training_performed"]:
                     policy = load_checkpoint(Path(pilot["session_directory"]) / "candidate-policy.json")
                     candidate = str((Path(pilot['session_directory']) / 'candidate-policy.json').resolve())
@@ -436,9 +559,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                     reason = "wave_limit"
                     break
                 continue
-            if scene == "pause":
-                target = "continue"
-            elif scene == 'death':
+            if scene == 'death':
                 target = 'ok'
                 if recording:
                     recording.event('run_lost','사망이 확인됐습니다. 이번 판의 기록을 저장합니다.')
@@ -591,6 +712,8 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                              **({'recovery_only': True, 'training_eligible': False,
                                  'bootstrap_reason': 'unsupported_loot_in_excluded_partial_recovery'}
                                 if recovery_loot and not neural_action else {})})
+    except _ObservationWaitBudget:
+        reason = waiting['phase']
     except Exception as error:
         reason = f"{type(error).__name__}: {error}"
         from playmodel.execution_log import event, exception
@@ -611,14 +734,6 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
                 controller.release()
             except Exception as error:
                 release_error = str(error)
-            try:
-                final = capture_session(executable, directory / "menus", timeout=4)
-                small, sw, sh = read_diagnostic_png(Path(final["session_directory"]) / "frame.png", stride=6)
-                state = BrotatoVision().observe(small, sw, sh)
-                if state.combat_likely and not stop_latched.is_set() and not stop_file.exists():
-                    controller.tap_menu("escape")
-            except Exception:
-                pass
         if recording is not None:
             recording.event('stop', '학습 세션을 종료합니다. 원본을 보존하고 주요 장면과 녹음용 자막을 만듭니다.', reason=reason)
             time.sleep(1)
@@ -627,12 +742,21 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
             except Exception as error:
                 recording_report = {'error': str(error), 'review_needed': True}
                 reason = 'recording_shutdown_unconfirmed'
+    if waiting is not None:
+        observation_wait_seconds += time.perf_counter() - wait_started
+        # Loop limits also end a wait segment normally. Exceptions retain their
+        # exact hard-stop reason, including STOP, identity and failed releases.
+        if reason == 'menu_limit':
+            reason = waiting['phase']
     report = {"session_directory": str(directory.resolve()), "reason": reason, "pilots": pilots,
               "training_updates": sum(bool(p["training_performed"]) for p in pilots),
               "menu_choices": "bootstrap_rules_not_learned", "automatic_shop_purchases": False,
               "build_calibration": "Brotato 1.1.15.4 en/zh 1920x1080", "stop_file": str(stop_file),
               'style': style, 'recording': recording_report, 'release_error': release_error,
               'shop_rerolls': len(shop_log), 'checkpoint_input': str(checkpoint) if checkpoint else None}
+    report.update(observation_wait_seconds=observation_wait_seconds,
+                  observation_wait=waiting, observation_events=observation_events,
+                  observation_wait_segment=reason in ('awaiting_game_resume', 'waiting_observation'))
     report.update(background_learning_jobs=learning_jobs, experimental_candidate_adoptions=candidate_adoptions)
     report['combat_policy_backend'] = 'experimental_external_runner' if combat_runner is not None else 'linear_movement'
     if neural_menu is not None:
@@ -649,7 +773,7 @@ def run_session(executable: Path, output: Path, *, waves: int = 2, seconds: floa
         except Exception as error:
             report['video_title_error'] = str(error)
     (directory / 'shop-learning.json').write_text(json.dumps(shop_log, ensure_ascii=False, indent=2), encoding='utf-8')
-    if reason not in ('wave_limit','segment_limit','run_finished'):
+    if reason not in ('wave_limit','segment_limit','run_finished','awaiting_game_resume','waiting_observation'):
         (directory / 'help-request.json').write_text(json.dumps({'reason': reason, 'automatic_agent_call': False,
             'last_menu_source': str(source) if 'source' in locals() else None, 'recoveries_exhausted': unknown_attempts,
             'review_needed': True}, ensure_ascii=False, indent=2), encoding='utf-8')

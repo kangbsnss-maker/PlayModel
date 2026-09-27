@@ -1,0 +1,5 @@
+# Separate .venv-laya environment; reuse existing tested torch 2.7.1+cu126.
+laya==0.3.20
+transformers==4.57.6
+safetensors==0.7.0
+huggingface-hub==0.36.2

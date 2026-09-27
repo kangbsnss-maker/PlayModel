@@ -332,7 +332,12 @@ class FullRunRecorder:
         if actual.get("rollout_eligible") is not True or not actual.get("flat_rollout_path"):
             self.invalidate("combat collector rejected this segment")
             raise ValueError("combat segment is not eligible")
-        batch = load_rollout(actual["flat_rollout_path"])
+        batch = load_rollout(actual["flat_rollout_path"], allow_mixed_control_audit=True)
+        segment_manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8'))
+        if actual.get('mixed_control', False) != segment_manifest.get('mixed_control', False):
+            raise ValueError('mixed-control report differs from frozen manifest')
+        if segment_manifest.get('mixed_control') is True:
+            self.invalidate('mixed_control_excluded_from_cnn_ppo')
         if (batch.runtime_contract != RUNTIME_CONTRACT or batch.behavior_version != self.behavior_version
                 or batch.split != self.split or not batch.valid.all() or batch.valid.shape[1] != 1):
             raise ValueError("incompatible combat segment")

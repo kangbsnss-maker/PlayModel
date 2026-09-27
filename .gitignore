@@ -1,5 +1,6 @@
 # Local environment and caches
 .venv/
+.venv-laya/
 venv/
 __pycache__/
 *.py[cod]
@@ -20,6 +21,7 @@ htmlcov/
 .vscode/
 Thumbs.db
 .DS_Store
+/PlayModel.lnk
 
 # Runtime data, game assets, credentials and machine-specific reports
 /data/**

@@ -13,6 +13,18 @@ import time
 from .interaction import WindowController
 
 
+# Initial conservative reserve, not a measured bound on native post latency.
+# It never extends the caller's deadline and only applies before the first post.
+MINIMUM_POST_BUDGET_NS = 2_000_000
+
+
+class PrePostMovementDeadline(OSError):
+    """This movement call was cancelled after identity checks, before any native post."""
+    def __init__(self, timing, message='Background movement deadline expired before any key post'):
+        super().__init__(message)
+        self.timing = dict(timing)
+
+
 class BackgroundController:
     def __init__(self, hwnd: int, expected_exe: Path):
         # Reuse process identity and Win32 bindings only; never call foreground
@@ -52,14 +64,33 @@ class BackgroundController:
     def click(self, x: int, y: int, expected_size: tuple[int, int]):
         raise OSError("Mouse messages are unverified; use background keyboard navigation")
 
-    def _key(self, key: int, up: bool, *, deadline_ns=None):
+    def _key(self, key: int, up: bool, *, deadline_ns=None, movement_timing=None):
         data = 1 | (self._scan(key, 0) << 16)
         if key in (0x25, 0x26, 0x27, 0x28):
             data |= 1 << 24  # Dedicated arrow keys, not keypad arrows.
         if up:
             data |= (1 << 30) | (1 << 31)
-        if deadline_ns is not None and time.perf_counter_ns() >= deadline_ns:
-            raise OSError('Background movement deadline expired before key post')
+        if deadline_ns is not None:
+            checked = time.perf_counter_ns()
+            if checked >= deadline_ns:
+                if movement_timing is not None and not movement_timing['native_post_attempted']:
+                    movement_timing['deadline_checked_at_ns'] = checked
+                    raise PrePostMovementDeadline(movement_timing)
+                raise OSError('Background movement deadline expired before key post')
+            if (movement_timing is not None and not movement_timing['native_post_attempted']
+                    and deadline_ns - checked < MINIMUM_POST_BUDGET_NS):
+                movement_timing.update(deadline_checked_at_ns=checked,
+                                       cancellation_reason='post_budget_insufficient',
+                                       minimum_post_budget_ns=MINIMUM_POST_BUDGET_NS)
+                raise PrePostMovementDeadline(movement_timing,
+                    'Background movement has insufficient budget before first key post')
+        if movement_timing is not None:
+            movement_timing['native_post_attempted'] = True
+            movement_timing['attempted_posts'] += 1
+            if movement_timing['posts_started_at_ns'] is None:
+                # Reuse the final freshness check time. No extra clock/native
+                # call may consume the remaining budget before the actual post.
+                movement_timing['posts_started_at_ns'] = checked if deadline_ns is not None else time.perf_counter_ns()
         self._message(0x0101 if up else 0x0100, key, data)
 
     def set_movement(self, keys: set[int]):
@@ -72,18 +103,25 @@ class BackgroundController:
     def _set_movement(self, keys: set[int], *, deadline_ns=None):
         if not keys <= {0x57, 0x41, 0x53, 0x44}:
             raise ValueError("Background movement allows WASD only")
-        timing = {'started_at_ns': time.perf_counter_ns(), 'deadline_ns': deadline_ns,
-                  'check_finished_at_ns': None, 'posts_finished_at_ns': None, 'posted_keys': 0}
+        self._movement_call_id = getattr(self, '_movement_call_id', 0) + 1
+        timing = {'call_id': self._movement_call_id,
+                  'started_at_ns': time.perf_counter_ns(), 'deadline_ns': deadline_ns,
+                  'identity_check_passed': False, 'check_finished_at_ns': None,
+                  'deadline_checked_at_ns': None, 'native_post_attempted': False,
+                  'attempted_posts': 0, 'posts_started_at_ns': None,
+                  'posts_finished_at_ns': None, 'posted_keys': 0}
         self.last_movement_timing = timing
         self.check()
         timing['check_finished_at_ns'] = time.perf_counter_ns()
+        timing['identity_check_passed'] = True
         if deadline_ns is not None and timing['check_finished_at_ns'] >= deadline_ns:
-            raise OSError('Background movement deadline expired during identity check')
+            timing['deadline_checked_at_ns'] = timing['check_finished_at_ns']
+            raise PrePostMovementDeadline(timing, 'Background movement deadline expired during identity check')
         def key_message(key, up):
             if deadline_ns is None:
                 self._key(key, up)
             else:
-                self._key(key, up, deadline_ns=deadline_ns)
+                self._key(key, up, deadline_ns=deadline_ns, movement_timing=timing)
             timing['posted_keys'] += 1
         for key in self.held - keys:
             key_message(key, True)

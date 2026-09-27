@@ -117,10 +117,11 @@ class NeuralAction:
 
 
 class _Writer:
-    def __init__(self, directory, first_action_callback=None, action_callback=None):
+    def __init__(self, directory, first_action_callback=None, action_callback=None, record_factory=None):
         self.directory = directory
         self.first_action_callback = first_action_callback
         self.action_callback = action_callback
+        self.record_factory = record_factory or _action_record
         (directory / 'frames').mkdir()
         self.pending = queue.Queue(32)
         self.error = None
@@ -136,7 +137,7 @@ class _Writer:
                         packet = self.pending.get(timeout=.02)
                     except queue.Empty:
                         continue
-                    record = _action_record(packet)
+                    record = self.record_factory(packet)
                     path = self.directory / record['frame_ref']
                     with path.open('xb') as output:
                         output.write(packet.frame.pixels)
@@ -193,8 +194,16 @@ class NeuralMovementSink:
         self.release_failed = False
         self.online_session = online_session
 
+    def _valid_packet(self, action):
+        return isinstance(action, NeuralAction)
+
+    def _commit_packet(self, action, attempt):
+        self.hidden = action.hidden_after
+        if self.online_session is not None:
+            self.online_session.commit(action)
+
     def send(self, action, *, generation, observation_sequence, deadline_ns):
-        if (not isinstance(action, NeuralAction) or action.frame.sequence != observation_sequence
+        if (not self._valid_packet(action) or action.frame.sequence != observation_sequence
                 or action.frame.metadata['hwnd'] != self.hwnd or self.writer.error
                 or self.writer.pending.full() or type(action.action) is not int
                 or not 0 <= action.action < 9 or not action.legal_mask[action.action]):
@@ -220,6 +229,8 @@ class NeuralMovementSink:
         if started >= deadline_ns:
             raise OSError('neural movement deadline expired')
         attempt['transport_started_at_ns'] = started
+        previous_call_id = getattr(self.background, '_movement_call_id', 0)
+        attempt['expected_background_call_id'] = previous_call_id + 1 if type(previous_call_id) is int else None
         self.transport_attempts.append(attempt)
         try:
             bounded = getattr(self.background, 'set_movement_before', None)
@@ -230,6 +241,16 @@ class NeuralMovementSink:
         except Exception as error:
             attempt['transport_finished_at_ns'] = time.perf_counter_ns()
             attempt['error'] = type(error).__name__
+            from .background import PrePostMovementDeadline
+            if isinstance(error, PrePostMovementDeadline):
+                proof = error.timing
+                if (proof == getattr(self.background, 'last_movement_timing', None)
+                        and proof.get('call_id') == attempt['expected_background_call_id']
+                        and proof.get('identity_check_passed') is True
+                        and proof.get('native_post_attempted') is False
+                        and proof.get('attempted_posts') == 0):
+                    attempt.update(transmitted=False, delivery_certainty='definitely_not_sent',
+                                   cancellation_proof=dict(proof))
             raise
         finally:
             stages = getattr(self.background, 'last_movement_timing', None)
@@ -242,9 +263,7 @@ class NeuralMovementSink:
         self.sent_count += 1
         self.previous_action = action.action
         self.last_sent_at_ns = action.sent_at_ns
-        self.hidden = action.hidden_after
-        if self.online_session is not None:
-            self.online_session.commit(action)
+        self._commit_packet(action, attempt)
         # Publish only after all native transmission state is committed. The
         # recorder receives a complete packet and never mutates policy state.
         self.writer.pending.put_nowait(action)
@@ -331,12 +350,14 @@ def _batch(model, packets, final_frame, *, terminal, final_phase, rollout_id, sp
     return chunk_rollout(batch, initial_states=states, chunk_steps=chunk_steps, burn_in=burn_in), batch, states
 
 
-def load_rollout(path: Path | str, *, device='cpu') -> RolloutBatch:
+def load_rollout(path: Path | str, *, device='cpu', allow_mixed_control_audit=False) -> RolloutBatch:
     """Verify the frozen local evidence manifest before deserializing tensors."""
     path = Path(path).resolve()
     manifest = json.loads((path.parent / 'manifest.json').read_text(encoding='utf-8'))
     if manifest.get('schema') != SCHEMA or manifest.get('recorder_complete') is not True:
         raise ValueError('incomplete neural rollout manifest')
+    if manifest.get('mixed_control') is True and not allow_mixed_control_audit:
+        raise ValueError('mixed-control rollout is excluded from CNN PPO; explicit audit access required')
     files = manifest.get('files', [])
     if not any(row['path'] == path.name for row in files):
         raise ValueError('rollout absent from manifest')
@@ -357,6 +378,8 @@ def load_rollout(path: Path | str, *, device='cpu') -> RolloutBatch:
     payload = torch.load(path, map_location='cpu', weights_only=True)
     if payload.get('schema') != SCHEMA:
         raise ValueError('unsupported neural rollout schema')
+    if payload.get('mixed_control', False) != manifest.get('mixed_control', False):
+        raise ValueError('mixed-control provenance differs from manifest')
     contract = manifest.get('runtime_contract', LEGACY_RUNTIME_CONTRACT)
     phase_schema = manifest.get('phase_schema', LEGACY_PHASE_SCHEMA)
     if (contract, phase_schema) not in ((RUNTIME_CONTRACT, PHASE_SCHEMA),
@@ -372,17 +395,126 @@ def load_rollout(path: Path | str, *, device='cpu') -> RolloutBatch:
     return batch.to(device)
 
 
+def safe_observation_transition(report):
+    """Classify a released visual abstention, never a terminal or training result."""
+    try:
+        if (report['reason'] != 'screen_changed' or report['error'] is not None
+                or any(report[key] for key in ('capture_error', 'safety_reason', 'controller_guard_reason', 'cleanup_errors'))
+                or report['recorder_complete'] is not True or report['worker_stopped'] is not True
+                or report['terminal_kind'] is not None or report['verified_terminal_boundary'] is not False):
+            return None
+        directory = Path(report['session_directory']).resolve()
+        if (directory / 'terminal.json').exists():
+            return None
+        paths = [directory / name for name in ('control-events.json', 'input-attempts.json', 'phase-rejection.json')]
+        events, attempts, phase = [json.loads(path.read_text(encoding='utf8')) for path in paths]
+        identity = report['target_identity']
+        if (not identity or any(not identity.get(k) for k in ('hwnd', 'pid', 'executable'))
+                or any(phase['metadata'].get(k) != identity[k] for k in ('hwnd', 'pid', 'executable'))
+                or phase['clock_domain'] != CLOCK or phase['metadata']['clock'] != CLOCK
+                or phase['decision'] != 'abstain' or phase['vision']['combat_likely'] is not False):
+            return None
+        observed, available, rejected = (phase['metadata']['capture_started_at_ns'],
+                                        phase['available_at_ns'], phase['vision']['rejected_at_ns'])
+        if (any(type(v) is not int for v in (observed, available, rejected, phase['sequence']))
+                or not 0 < observed <= phase['metadata']['capture_finished_at_ns'] <= available <= rejected):
+            return None
+        frame = (directory / phase['frame_ref']).resolve()
+        if frame.parent != directory or _sha(frame) != phase['frame_sha256']:
+            return None
+        if frame.stat().st_size != phase['metadata']['sample_width'] * phase['metadata']['sample_height'] * 4:
+            return None
+        if not isinstance(events, list) or not isinstance(attempts, list) or len(attempts) != report['steps']:
+            return None
+        allowed = {'authority', 'release', 'dispatch', 'proposed', 'rejected', 'retry', 'retry_completed', 'expired'}
+        for event in events:
+            if event['kind'] not in allowed or event['clock_domain'] != CLOCK:
+                return None
+            if event['kind'] == 'authority' and event['reason'] not in ('ai_granted', 'screen_changed', 'closed'):
+                return None
+            if event['kind'] == 'rejected' and not (event['reason'] == 'policy_abstained' and event['sequence'] == phase['sequence']):
+                return None
+        retries = [e for e in events if e['kind'] == 'retry']
+        completed = [e for e in events if e['kind'] == 'retry_completed']
+        expired = [e for e in events if e['kind'] == 'expired']
+        if not len(retries) == len(completed) == len(expired) == report['policy_deadline_retries'] == report['policy_deadline_retries_completed']:
+            return None
+        for retry, done, expiry in zip(retries, completed, expired):
+            if (retry['reason'] != 'policy_deadline_fresh_frame' or done['reason'] != 'fresh_action_transmitted'
+                    or expiry['reason'] != 'policy_deadline' or retry['sequence'] != expiry['sequence']
+                    or retry['generation'] != expiry['generation'] + 1 or done['generation'] != retry['generation']
+                    or done['sequence'] <= retry['sequence']
+                    or not expiry['at_ns'] <= retry['at_ns'] <= done['at_ns'] <= retry['deadline_ns']):
+                return None
+        dispatches = [e for e in events if e['kind'] == 'dispatch']
+        if len(dispatches) != len(attempts):
+            return None
+        for attempt, event in zip(attempts, dispatches):
+            start, finish, deadline = (attempt['transport_started_at_ns'], attempt['transport_finished_at_ns'], attempt['deadline_ns'])
+            if (attempt['transmitted'] is not True or attempt['error'] is not None or attempt.get('acknowledged') is False
+                    or attempt['clock_domain'] != CLOCK or not 0 < start <= finish < deadline
+                    or event['reason'] != 'transmitted' or event['receipt']['transmitted'] is not True
+                    or event['receipt'].get('acknowledged') is False
+                    or event['sequence'] != attempt['sequence'] or event['generation'] != attempt['generation']
+                    or event['sink_deadline_ns'] != deadline
+                    or not event['send_started_at_ns'] <= start <= finish <= event['send_finished_at_ns'] < deadline):
+                return None
+            stages = attempt.get('background_stages')
+            if stages and (stages.get('identity_check_passed') is not True
+                    or stages.get('attempted_posts') != stages.get('posted_keys')):
+                return None
+        boundaries = [e for e in events if e['kind'] == 'authority' and e['reason'] == 'screen_changed']
+        if not boundaries or boundaries[0]['at_ns'] < rejected:
+            return None
+        boundary = boundaries[0]['at_ns']
+        if any(e['send_finished_at_ns'] >= boundary for e in dispatches):
+            return None
+        snapshot = boundaries[0]['guard_snapshot']
+        if (snapshot['latest_sequence'] != phase['sequence']
+                or snapshot['latest_observed_at_ns'] != observed or snapshot['latest_available_at_ns'] != available):
+            return None
+        releases = [e for e in events if e['kind'] == 'release']
+        if not releases or not any(e['reason'] == 'screen_changed' for e in releases):
+            return None
+        for event in releases:
+            phase_abstain = (event['reason'] == 'policy_abstained' and any(
+                e['kind'] == 'rejected' and e['reason'] == 'policy_abstained'
+                and e['sequence'] == phase['sequence'] and e['generation'] == event['generation'] for e in events))
+            lower = rejected if phase_abstain else boundary
+            if (event['reason'] not in ('screen_changed', 'closed') and not phase_abstain
+                    or event['receipt']['transmitted'] is not True
+                    or event['receipt'].get('acknowledged') is False
+                    or not lower <= event['send_started_at_ns'] <= event['send_finished_at_ns'] < event['deadline_ns']):
+                return None
+        return {'schema': 'playmodel.released-observation-transition.v1', 'previous_session': str(directory),
+                'target_identity': identity, 'released_at_ns': max(e['send_finished_at_ns'] for e in releases),
+                'phase_evidence_path': str(paths[2]), 'phase_evidence_sha256': _sha(paths[2]),
+                'frame_ref': str(frame), 'frame_sha256': phase['frame_sha256'],
+                'evidence_files': [{'path': str(path), 'sha256': _sha(path)} for path in paths],
+                'training_eligible': False, 'terminal_reward_verified': False}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def _safe_recovery_release(report):
     """Only completed, released scheduling guards may open a separate trial."""
     if (report.get('reason') != 'controller_guard'
-            or report.get('controller_guard_reason') not in ('held_observation_expired', 'input_watchdog')
+            or report.get('controller_guard_reason') not in ('held_observation_expired', 'input_watchdog', 'sink_deadline', 'input_error:PrePostMovementDeadline')
             or report.get('recorder_complete') is not True or report.get('worker_stopped') is not True
             or report.get('cleanup_errors') or report.get('capture_error') or report.get('safety_reason')):
         return None
     directory = Path(report['session_directory'])
     events = json.loads((directory / 'control-events.json').read_text(encoding='utf-8'))
     attempts = json.loads((directory / 'input-attempts.json').read_text(encoding='utf-8'))
-    if any(row.get('transmitted') is not True or row.get('error') for row in attempts):
+    failure_finished = None
+    if report['controller_guard_reason'] in ('sink_deadline', 'input_error:PrePostMovementDeadline'):
+        if not attempts or not _definitely_unsent_deadline(attempts[-1], events):
+            return None
+        failure_finished = attempts[-1]['transport_finished_at_ns']
+        successful_attempts = attempts[:-1]
+    else:
+        successful_attempts = attempts
+    if any(row.get('transmitted') is not True or row.get('error') for row in successful_attempts):
         return None
     guard = next((index for index, row in enumerate(events) if row['kind'] == 'authority'
                   and row['reason'] == report['controller_guard_reason']), None)
@@ -394,11 +526,55 @@ def _safe_recovery_release(report):
             or row['receipt'].get('acknowledged') is False
             or 'error' in row['reason'] or row['reason'].startswith('release_')
             or not isinstance(row.get('send_finished_at_ns'), int)
+            or (failure_finished is not None and row['send_finished_at_ns'] <= failure_finished)
             or row['send_finished_at_ns'] >= row['deadline_ns'] for row in releases):
         return None
     return {'released_at_ns': max(row['send_finished_at_ns'] for row in releases),
             'target_identity': report.get('target_identity'),
             'previous_session': str(directory), 'guard': report['controller_guard_reason']}
+
+
+def _definitely_unsent_deadline(attempt, events):
+    """Accept only this call's typed cancellation, never infer non-delivery from zero posts."""
+    if (attempt.get('error') != 'PrePostMovementDeadline' or attempt.get('transmitted') is not False
+            or attempt.get('delivery_certainty') != 'definitely_not_sent'):
+        return False
+    proof = attempt.get('cancellation_proof')
+    if not isinstance(proof, dict) or proof != attempt.get('background_stages'):
+        return False
+    names = ('started_at_ns', 'check_finished_at_ns', 'deadline_checked_at_ns', 'deadline_ns', 'call_id')
+    if any(type(proof.get(key)) is not int for key in names):
+        return False
+    start, finish, deadline = (attempt.get(key) for key in
+                               ('transport_started_at_ns', 'transport_finished_at_ns', 'deadline_ns'))
+    if any(type(value) is not int for value in (start, finish, deadline)):
+        return False
+    if (proof['call_id'] != attempt.get('expected_background_call_id') or proof['call_id'] <= 0
+            or type(attempt.get('expected_background_call_id')) is not int
+            or proof.get('identity_check_passed') is not True or proof.get('native_post_attempted') is not False
+            or type(proof.get('attempted_posts')) is not int or type(proof.get('posted_keys')) is not int
+            or proof.get('attempted_posts') != 0 or proof.get('posted_keys') != 0
+            or proof.get('posts_started_at_ns') is not None or proof.get('posts_finished_at_ns') is not None
+            or proof['deadline_ns'] != deadline
+            or not 0 < start <= proof['started_at_ns'] <= proof['check_finished_at_ns'] <= proof['deadline_checked_at_ns'] <= finish
+            or not start < deadline):
+        return False
+    checked = proof['deadline_checked_at_ns']
+    if not (deadline <= checked or (proof.get('cancellation_reason') == 'post_budget_insufficient'
+            and type(proof.get('minimum_post_budget_ns')) is int
+            and proof['minimum_post_budget_ns'] == 2_000_000
+            and 0 < deadline - checked < 2_000_000)):
+        return False
+    dispatches = [event for event in events if event['kind'] == 'dispatch' and event['reason'] != 'transmitted']
+    if len(dispatches) != 1:
+        return False
+    event = dispatches[0]
+    return (event['reason'] in ('sink_deadline', 'input_error:PrePostMovementDeadline')
+            and event.get('sequence') == attempt.get('sequence')
+            and event.get('generation') == attempt.get('generation')
+            and event.get('sink_deadline_ns') == deadline
+            and type(event.get('send_started_at_ns')) is int and type(event.get('send_finished_at_ns')) is int
+            and event['send_started_at_ns'] <= start <= finish <= event['send_finished_at_ns'])
 
 
 def _reacquire_combat(stream, background, vision, *, recovery, config, stop_file, directory):
@@ -457,7 +633,7 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
     if type(scheduling_recovery) is not bool or type(recovery_only) is not bool:
         raise ValueError('recovery flags must be boolean')
     online = kwargs.get('online_session')
-    if scheduling_recovery and online is None and not recovery_only:
+    if scheduling_recovery and online is None and not recovery_only and kwargs.get('mixed_control') is not True:
         raise ValueError('fixed scored/training runs cannot silently recover across a gap')
     started, attempts, recoveries, consecutive, total = time.perf_counter(), [], [], 0, 0
     active_model, active_kwargs, current = model, dict(kwargs), config
@@ -486,17 +662,18 @@ def run_neural_trial(executable: Path, output_root: Path, *, model: RecurrentAct
         if online is not None:
             active_model = online.recorder.model
             active_kwargs['build_state'] = online.recorder.build_state
-        active_kwargs.update(initial_hidden=active_model.initial_hidden(1), reset_first=True,
+        active_kwargs.update(initial_hidden=None if kwargs.get('combat_actor') is not None else active_model.initial_hidden(1), reset_first=True,
                              first_action_callback=None, _recovery=proof)
         current = replace(config, max_seconds=remaining, max_steps=config.max_steps-total)
     result = dict(report)
     result.update(scheduling_recoveries=recoveries,
         attempt_reports=[str(Path(item['session_directory']) / 'report.json') for item in attempts],
-        total_actual_steps=total, recovery_only=recovery_only, evaluation_score_eligible=not recoveries and not recovery_only)
+        total_actual_steps=total, recovery_only=recovery_only,
+        evaluation_score_eligible=not recoveries and not recovery_only and kwargs.get('combat_actor') is None)
     if recovery_only or (recoveries and online is None):
         result.update(rollout_eligible=False, rollout_path=None, flat_rollout_path=None, initial_states_path=None,
             recovery_completed=bool(report.get('reason') in ('terminal_wave_clear', 'terminal_death')
-                                    and report.get('rollout_eligible') is True and not report.get('error')))
+                                    and report.get('verified_terminal_boundary') is True and not report.get('error')))
     _json(Path(report['session_directory']) / 'scheduling-recovery-summary.json', result)
     return result
 
@@ -507,7 +684,8 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
                      stream_factory=CaptureStream, background_factory=BackgroundController,
                      vision_factory=BrotatoVision, chunk_steps=32, burn_in=8, split='train',
                      initial_hidden=None, reset_first=None, scene_callback=None, build_state=None,
-                     first_action_callback=None, terminal_ocr_reader=None, online_session=None, _recovery=None) -> dict:
+                       first_action_callback=None, terminal_ocr_reader=None, online_session=None, _recovery=None,
+                       mixed_control=False, combat_actor=None) -> dict:
     """Explicit live collection entry point; performs no PPO update or menu action.
 
     An optional hidden state carries history from a caller-owned menu path, but
@@ -519,6 +697,10 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
         raise ValueError('collection is separate from training; use a fixed split')
     if online_session is not None and split != 'train':
         raise ValueError('online actor updates require the training split')
+    if type(mixed_control) is not bool or (mixed_control and online_session is not None):
+        raise ValueError('mixed control requires a frozen combat actor without online CNN PPO')
+    if combat_actor is not None and (not mixed_control or online_session is not None):
+        raise ValueError('tactical combat requires explicit mixed control without CNN PPO')
     if not 1 <= chunk_steps <= 64 or not 0 <= burn_in < 64 or chunk_steps + burn_in > 64:
         raise ValueError('bounded recurrent chunk settings required')
     if terminal_observer is None and (terminal_rules is None or ocr_script is None):
@@ -526,14 +708,16 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
     _evidence(combat_entry, ('combat',))
     # A private copy guarantees that an external trainer cannot change behavior
     # weights while this collector owns input. It is never promoted here.
-    behavior = (online_session.begin_combat(model, build_state) if online_session is not None
+    behavior = (None if combat_actor is not None else
+                online_session.begin_combat(model, build_state) if online_session is not None
                 else deepcopy(model).eval())
     build_state = deepcopy(build_state)
-    if behavior.config.context_dim == 64 and build_state is None:
+    if behavior is not None and behavior.config.context_dim == 64 and build_state is None:
         raise ValueError('context64 collection requires observed build state')
-    device = next(behavior.parameters()).device
-    hidden = behavior.initial_hidden(1) if initial_hidden is None else initial_hidden.detach().clone().to(device)
-    if hidden.shape != (1, behavior.config.hidden_size) or not torch.isfinite(hidden).all():
+    device = next(behavior.parameters()).device if behavior is not None else None
+    hidden = (None if behavior is None else behavior.initial_hidden(1) if initial_hidden is None
+              else initial_hidden.detach().clone().to(device))
+    if behavior is not None and (hidden.shape != (1, behavior.config.hidden_size) or not torch.isfinite(hidden).all()):
         raise ValueError('invalid initial recurrent state')
     reset_first = initial_hidden is None if reset_first is None else reset_first
     if type(reset_first) is not bool:
@@ -547,10 +731,12 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
         build_sources = build_source_proofs(build_snapshot)
         _json(session / 'build-state.json', build_snapshot)
     stop_file = Path(stop_file) if stop_file else session / 'STOP'
-    save_checkpoint(behavior, session / 'behavior-policy.pt', {'scope': 'bounded_movement_trial', 'split': split})
+    if behavior is not None:
+        save_checkpoint(behavior, session / 'behavior-policy.pt', {'scope': 'bounded_movement_trial', 'split': split})
     _json(session / 'capture-config.json', {**asdict(config), 'chunk_steps': chunk_steps, 'burn_in': burn_in,
           'split': split, 'clock': CLOCK, 'context_schema': ('brotato-observed-build-v2'
-              if behavior.config.context_dim == 64 else 'actual_previous_action_onehot9_remaining_unknown'),
+              if behavior is not None and behavior.config.context_dim == 64 else
+              'observed_tactical_state' if combat_actor is not None else 'actual_previous_action_onehot9_remaining_unknown'),
           'initial_hidden_carried': initial_hidden is not None})
     _json(session / 'combat-entry.json', asdict(combat_entry))
     with (session / 'combat-entry-source').open('xb') as output:
@@ -558,7 +744,9 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
     if terminal_rules:
         _json(session / 'terminal-rules.json', terminal_rules.document)
     writer = _Writer(session, first_action_callback=first_action_callback,
-                     action_callback=online_session.record_action if online_session is not None else None)
+                     action_callback=(combat_actor.record_action if combat_actor is not None else
+                                      online_session.record_action if online_session is not None else None),
+                     record_factory=combat_actor.action_record if combat_actor is not None else None)
     stream = controller = safety = terminal_worker = sink = None
     terminal = final_frame = None
     first = None
@@ -589,17 +777,23 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
         hwnd = first.metadata['hwnd']
         background = background_factory(hwnd, executable)
         background.release()
-        sink = NeuralMovementSink(background, writer, hwnd, hidden, reset_first=reset_first,
-                                  online_session=online_session)
+        if combat_actor is not None:
+            from .tactical_runtime import TacticalMovementSink
+            combat_actor.begin_combat(session.name)
+            sink = TacticalMovementSink(background, writer, hwnd)
+        else:
+            sink = NeuralMovementSink(background, writer, hwnd, hidden, reset_first=reset_first,
+                                      online_session=online_session)
         vision = vision_factory()
         if _recovery is not None:
             first, combat_entry = _reacquire_combat(stream, background, vision, recovery=_recovery,
                 config=config, stop_file=stop_file, directory=session)
-        rng = torch.Generator(device=device).manual_seed(config.seed)
+        rng = torch.Generator(device=device).manual_seed(config.seed) if behavior is not None else None
         # Complete lazy kernel setup before acquiring timed input authority.
-        with torch.no_grad():
-            warm = behavior.step(*_inputs(behavior, first, 0, build_state=build_state), hidden=hidden)
-            warm.value.cpu().tolist()
+        if behavior is not None:
+            with torch.no_grad():
+                warm = behavior.step(*_inputs(behavior, first, 0, build_state=build_state), hidden=hidden)
+                warm.value.cpu().tolist()
 
         def policy(observation, deadline):
             frame = observation.payload
@@ -627,6 +821,11 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
                 if scene_callback:
                     scene_callback('combat')
                 timing['callback_finished_at_ns'] = time.perf_counter_ns()
+                if combat_actor is not None:
+                    timing['stage'] = 'tactical_geometry'
+                    packet = combat_actor.propose(frame, state, build_state=build_state)
+                    timing['outcome'] = 'proposal_ready'
+                    return packet
                 timing['stage'] = 'input_tensors'
                 reset = sink.sent_count == 0 and sink.reset_first
                 chosen, version, segment = behavior, None, None
@@ -786,7 +985,7 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
                 cleanup_errors.append(f'capture_close:{type(error).__name__}')
         recorder_complete = writer.close()
     rollout_path = flat_rollout_path = initial_states_path = None
-    last_hidden = sink.hidden.detach().cpu() if sink else hidden.detach().cpu()
+    last_hidden = None if combat_actor is not None else sink.hidden.detach().cpu() if sink else hidden.detach().cpu()
     events = [asdict(event) for event in controller.events()] if controller else []
     policy_retries = [event for event in events if event['kind'] == 'retry']
     completed_retries = [event for event in events if event['kind'] == 'retry_completed']
@@ -825,15 +1024,16 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
         _json(session / 'terminal.json', asdict(terminal))
         with (session / 'terminal-source.png').open('xb') as output:
             output.write(Path(terminal.frame_ref).read_bytes())
-    eligible = (reason in ('terminal_death', 'terminal_wave_clear', 'step_limit', 'time_limit')
-                and recorder_complete and worker_stopped and sink is not None and sink.packets
+    safe_collection = (recorder_complete and worker_stopped and sink is not None
                 and not sink.release_failed and not cleanup_errors and final_frame is not None
                 and len(policy_retries) == len(completed_retries)
                 and sum(event['kind'] == 'expired' for event in events) == len(policy_retries)
                 and not any((event['kind'] == 'rejected' and not
                              (event['reason'] == 'policy_abstained' and terminal is not None
                               and phase_frame[0] is not None and event['sequence'] == phase_frame[0].sequence)) or
-                            (event['kind'] == 'dispatch' and event['reason'] != 'transmitted') for event in events))
+                              (event['kind'] == 'dispatch' and event['reason'] != 'transmitted') for event in events))
+    eligible = (reason in ('terminal_death', 'terminal_wave_clear', 'step_limit', 'time_limit')
+                and safe_collection and sink.packets)
     if eligible and reason == 'time_limit':
         releases = [event['send_started_at_ns'] for event in events if event['kind'] == 'release'
                     and event['send_started_at_ns'] >= sink.packets[-1].sent_at_ns]
@@ -842,7 +1042,7 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
             caught = 'no_post_action_final_observation_before_time_limit_release'
     if online_session is not None:
         online_session.end_combat(frame=final_frame, phase=final_phase, terminal=terminal, eligible=bool(eligible))
-    if eligible and online_session is None:
+    if eligible and online_session is None and combat_actor is None:
         try:
             _json(session / 'final-observation.json', {**final_frame.metadata, 'available_at_ns': final_frame.available_at_ns})
             with (session / 'final-observation.bgra').open('xb') as output:
@@ -852,17 +1052,39 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
                                         chunk_steps=chunk_steps, burn_in=burn_in, build_state=build_state)
             rollout_path = session / 'rollout.pt'
             with rollout_path.open('xb') as output:
-                torch.save({'schema': SCHEMA, 'batch': batch.__dict__}, output)
+                torch.save({'schema': SCHEMA, 'batch': batch.__dict__, 'mixed_control': mixed_control}, output)
             flat_rollout_path = session / 'flat-rollout.pt'
             with flat_rollout_path.open('xb') as output:
-                torch.save({'schema': SCHEMA, 'batch': flat_batch.__dict__}, output)
+                torch.save({'schema': SCHEMA, 'batch': flat_batch.__dict__, 'mixed_control': mixed_control}, output)
             initial_states_path = session / 'initial-states.pt'
             with initial_states_path.open('xb') as output:
                 torch.save({'schema': SCHEMA, 'initial_states': states}, output)
         except Exception as error:
             caught = f'rollout_rejected:{type(error).__name__}: {error}'
             rollout_path = flat_rollout_path = initial_states_path = None
+    # Menu progression requires a verified boundary, not a nonempty PPO batch.
+    # A released recovery can reach the next menu before sending another action.
+    releases = [event for event in events if event['kind'] == 'release']
+    terminal_boundary = bool(safe_collection and terminal is not None and not caught
+        and reason == 'terminal_' + terminal.kind and not (stream and stream.error)
+        and not (safety and safety.reason) and releases
+        and all(isinstance(event.get('receipt'), dict)
+                and event['receipt'].get('transmitted') is True
+                and event['receipt'].get('acknowledged') is not False
+                and isinstance(event.get('send_finished_at_ns'), int)
+                and isinstance(event.get('deadline_ns'), int)
+                and event['send_finished_at_ns'] < event['deadline_ns'] for event in releases))
+    boundary_error = None
+    if terminal_boundary:
+        try:
+            _evidence(terminal, ('death', 'wave_clear'), rules=terminal_rules)
+            if _sha(session / 'terminal-source.png') != terminal.frame_sha256:
+                raise ValueError('terminal copied evidence mismatch')
+        except (OSError, ValueError) as error:
+            terminal_boundary, boundary_error = False, str(error)
     report = {'session_directory': str(session.resolve()), 'reason': reason, 'error': caught,
+              'verified_terminal_boundary': terminal_boundary,
+              'terminal_boundary_error': boundary_error,
               'capture_error': stream.error if stream is not None else None,
               'safety_reason': safety.reason if safety is not None else None,
               'target_identity': {key: first.metadata.get(key) for key in ('hwnd', 'pid', 'executable')}
@@ -876,7 +1098,7 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
               'steps': sink.sent_count if sink else 0, 'rollout_path': str(rollout_path.resolve()) if rollout_path else None,
               'flat_rollout_path': str(flat_rollout_path.resolve()) if flat_rollout_path else None,
               'initial_states_path': str(initial_states_path.resolve()) if initial_states_path else None,
-              'behavior_version': behavior.policy_version(), 'training_performed': False,
+              'behavior_version': behavior.policy_version() if behavior is not None else None, 'training_performed': False,
               'runtime_contract': RUNTIME_CONTRACT, 'phase_schema': PHASE_SCHEMA,
               'scope': 'online_versioned_combat' if online_session is not None else 'bounded_movement_trial',
               'full_run_complete': False, 'menu_heads_used': False,
@@ -885,15 +1107,31 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
               'terminal_kind': terminal.kind if terminal else None, 'final_phase': final_phase,
               'chunk_steps': chunk_steps, 'burn_in': burn_in,
               'gae_scope': 'chunk_traces_with_true_next_value_bootstrap', 'split': split,
-              'last_hidden': last_hidden.tolist(), 'final_hidden': last_hidden.tolist(),
+              'last_hidden': last_hidden.tolist() if last_hidden is not None else None,
+              'final_hidden': last_hidden.tolist() if last_hidden is not None else None,
               'hidden_scope': 'after_last_transmitted_action_observation_before_bootstrap',
               'recorder_complete': recorder_complete,
-              'rollout_eligible': bool(eligible) and online_session is None,
+              'rollout_eligible': bool(eligible) and online_session is None and combat_actor is None,
+              'mixed_control': mixed_control,
+              'cnn_training_eligible': bool(eligible) and not mixed_control and split == 'train' and online_session is None,
               'worker_stopped': worker_stopped, 'cleanup_errors': cleanup_errors}
+    if combat_actor is not None:
+        report.update(scope='local_tactical_combat', gae_scope=None, hidden_scope=None,
+                      evaluation_score_eligible=False, tactical_collection_eligible=terminal_boundary,
+                      action_domain='combat_tactic', cnn_training_eligible=False,
+                      run_id=combat_actor.session.run_id, tactical_epoch=combat_actor.session.epoch,
+                      tactical_receipts=[{'path': path, 'sha256': digest}
+                                         for path, digest in list(combat_actor.receipt_refs.values())],
+                      actions_path=str((session / 'actions.jsonl').resolve()),
+                      actions_sha256=_sha(session / 'actions.jsonl') if (session / 'actions.jsonl').is_file() else None)
+        if sink and sink.packets:
+            report['actual_movement_interval_ns'] = [sink.packets[0].sent_at_ns, sink.packets[-1].sent_at_ns]
+        combat_actor.end_combat(eligible=terminal_boundary)
     if online_session is not None:
         report.update(online_collection_eligible=bool(eligible), online_session=online_session.snapshot(),
                       behavior_versions=list(dict.fromkeys(packet.behavior_version for packet in sink.packets))
                         if sink else [])
+    report['observation_transition'] = safe_observation_transition(report)
     _json(session / 'report.json', report)
     # Disk logging stays outside the timed policy/dispatch loop. The durable
     # controller ledger includes the failed job even when it was still running.
@@ -912,7 +1150,10 @@ def _run_neural_trial_once(executable: Path, output_root: Path, *, model: Recurr
     # frozen files enter the manifest; its verified source image is copied above.
     files = [{'path': str(path.relative_to(session)).replace('\\', '/'), 'sha256': _sha(path)}
              for path in sorted(session.rglob('*')) if path.is_file() and path.relative_to(session).parts[0] != 'ocr']
-    _json(session / 'manifest.json', {'schema': SCHEMA, 'behavior_version': behavior.policy_version(),
+    _json(session / 'manifest.json', {'schema': SCHEMA if combat_actor is None else 'playmodel.tactical-movement.v1',
+                                     'behavior_version': behavior.policy_version() if behavior is not None else None,
+                                     'mixed_control': mixed_control,
+                                     'cnn_training_eligible': report['cnn_training_eligible'],
                                      'runtime_contract': RUNTIME_CONTRACT, 'phase_schema': PHASE_SCHEMA,
                                      'recorder_complete': recorder_complete and worker_stopped, 'files': files,
                                      'sources': build_sources})

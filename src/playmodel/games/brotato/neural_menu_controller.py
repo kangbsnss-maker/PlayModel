@@ -258,6 +258,19 @@ class NeuralMenuController:
                 return False
         return True
 
+    def _sample(self, current, previous_action, prepared_at):
+        return sample_choice(self.recorder.model, current, hidden=self.recorder.hidden,
+                             previous_action=previous_action, reset=not self.recorder.records,
+                             generator=self.generator, now_ns=prepared_at,
+                             build_state=self.recorder.build_state)
+
+    def _save_decision(self, stage, decision, application=None):
+        if self.output_directory is not None:
+            save_macro_record(self.output_directory / decision.decision_id / stage, decision, application)
+
+    def _record_application(self, decision, application):
+        self.recorder.append_macro(decision, application)
+
     def handle(self, shot: dict, ocr: dict, pixels: bytes, width: int = 1920, height: int = 1080) -> MenuDirective:
         """Called for each fresh observation. ``wait`` always means no input."""
         self._open()
@@ -332,18 +345,16 @@ class NeuralMenuController:
         self._stale_observations = 0
         if self._pending is None:
             try:
-                decision = sample_choice(self.recorder.model, current, hidden=self.recorder.hidden,
-                                         previous_action=previous_action, reset=not self.recorder.records,
-                                         generator=self.generator, now_ns=prepared_at,
-                                         build_state=self.recorder.build_state)
+                decision = self._sample(current, previous_action, prepared_at)
             except (ValueError, RuntimeError) as error:
                 self._fail(str(error))
             self._pending = _Pending(decision, verified_shop)
             self._authorization_expirations = 0
             self.samples += 1
             self._preparation_observations = 0
-            if self.output_directory is not None:
-                save_macro_record(self.output_directory / decision.decision_id / "proposed", decision)
+            self._save_decision("proposed", decision)
+            if self.clock() - source['observed_at_ns'] > MAX_AGE_NS:
+                return self._defer_stale_observation(stage='handle_decision', source=source)
         else:
             self._pending.navigation_observations += 1
             if self._pending.navigation_observations > self.max_navigation_observations:
@@ -536,12 +547,10 @@ class NeuralMenuController:
     def _commit(self, application: MacroApplication) -> MenuDirective:
         pending = self._pending
         try:
-            self.recorder.append_macro(pending.decision, application)
+            self._record_application(pending.decision, application)
         except (OSError, ValueError, RuntimeError) as error:
             self._fail("Full-run recorder rejected menu application: " + str(error))
-        if self.output_directory is not None:
-            save_macro_record(self.output_directory / pending.decision.decision_id / "accepted",
-                              pending.decision, application)
+        self._save_decision("accepted", pending.decision, application)
         state = self.recorder.build_state
         if state is not None:
             candidate = pending.decision.observation.candidates[pending.decision.action_index]
