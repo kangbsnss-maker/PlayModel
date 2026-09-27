@@ -5,9 +5,28 @@ from types import SimpleNamespace
 from unittest.mock import Mock,patch
 from playmodel.games.brotato.owned_weapons import verify_operation, same,OwnedWeaponLearning,inventory_equal
 from playmodel.games.brotato.menu import navigation_key,BUTTONS
+from playmodel.games.brotato.setup_run import focused_tile
 
 
 class OwnedWeaponTests(unittest.TestCase):
+    def test_single_owned_weapon_focus_does_not_require_a_runner_up(self):
+        pixels=bytes([200,200,200,255])*100*100
+        self.assertEqual(focused_tile(pixels,100,{0:(0,0,96,96)}),0)
+        self.assertIsNone(focused_tile(pixels,100,{}))
+        self.assertIsNone(focused_tile(bytes(len(pixels)),100,{0:(0,0,96,96)}))
+
+    def test_restart_closes_hover_before_reading_occluded_inventory(self):
+        menu=SimpleNamespace(pending_decision=None,client=Mock())
+        inventory=OwnedWeaponLearning(menu)
+        now=time.perf_counter_ns()
+        shot={'capture_started_at_ns':now,'session_directory':'.','frame_sha256':'source'}
+        with patch('playmodel.games.brotato.owned_weapons.snapshot',return_value=None), \
+             patch('playmodel.games.brotato.owned_weapons.popup',return_value={'selected':None}):
+            self.assertEqual(inventory.step(shot,{'available_at_ns':now},b''),'right')
+        self.assertEqual(inventory.last_key[1],'recover_unowned_hover')
+        menu.client.choose.assert_not_called()
+        menu.client.accept.assert_not_called()
+
     def sample(self,time,icons=('knife','sling'),currency=37):
         return {'wave':1,'count':len(icons),'icons':list(icons),'currency':currency,
                 'observed_at_ns':time,'available_at_ns':time+1,

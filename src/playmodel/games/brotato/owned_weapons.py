@@ -193,13 +193,15 @@ class OwnedWeaponLearning:
             if self.before:self.done.add(self.before['wave'])
             self.interrupt()
             return 'wait'
-        if card and card['selected'] is not None and self.before is None:
+        if card and self.before is None:
             # An already open modal has no owned-slot authorization. Recover by
             # Cancel only; never turn this recovery input into a policy label.
             source={'observed_at_ns':shot['capture_started_at_ns'],
                     'available_at_ns':ocr['available_at_ns'],
                     'frame_ref':str(Path(shot['session_directory'])/'frame.png'),
                     'frame_sha256':shot['frame_sha256']}
+            if card['selected'] is None:
+                return self.propose('right','recover_unowned_hover',source)
             key=('enter' if card['selected']=='cancel' else
                  navigation_key(card['boxes'][card['selected']],card['boxes']['cancel']))
             return self.propose(key,'recover_unowned_modal',source)

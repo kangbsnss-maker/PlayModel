@@ -64,7 +64,8 @@ def focused_tile(pixels: bytes, width: int, boxes: dict, *, low=145, high=245) -
         score=sum(low<=min(c)<=max(c)<=high and max(c)-min(c)<=18 for c in colors)/len(colors)
         scores.append((score,index))
     scores.sort(reverse=True)
-    return scores[0][1] if scores[0][0]>.65 and scores[1][0]<.35 else None
+    return (scores[0][1] if scores and scores[0][0]>.65
+            and (len(scores)==1 or scores[1][0]<.35) else None)
 
 
 def locked_character(pixels, width, ocr):
