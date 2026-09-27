@@ -10,6 +10,14 @@ from playmodel.games.brotato import setup_run
 
 
 class SetupRecoveryTests(unittest.TestCase):
+    def test_rotation_explores_weapons_even_when_affinity_scores_differ(self):
+        names=['low','high','middle']
+        profiles={name:{'text':[name]} for name in names}
+        scores={'low':-2,'high':3,'middle':1}
+        with patch('playmodel.games.brotato.character_context.affinity',side_effect=lambda traits,text:scores[text]):
+            choices=[setup_run.ranked_weapon_rotation(names,profiles,['trait'],i)[0] for i in range(4)]
+        self.assertEqual(choices,['high','middle','low','high'])
+
     def test_nonwrapping_weapon_rows_finish_scan_and_return_to_preferred_card(self):
         for names in (['Fist'],['Fist','Hand'],['Fist','Rock','Hand']):
             with self.subTest(names=names),tempfile.TemporaryDirectory() as temp:
@@ -59,6 +67,12 @@ class SetupRecoveryTests(unittest.TestCase):
                                  ['enter']+['right']*len(names)+['left']*(len(names)-1)+['enter'])
 
     def test_locked_character_is_observed_twice_then_left_without_enter(self):
+        self._locked_setup_case(27,1,'up')
+
+    def test_locked_tile_on_route_does_not_replace_unobserved_target(self):
+        self._locked_setup_case(28,28,'right')
+
+    def _locked_setup_case(self,requested,focused,first_key):
         phases=iter(['locked','locked','character','weapon','difficulty'])
         active={}
         pixels=bytes([255])*(1920*1080*4)
@@ -89,12 +103,12 @@ class SetupRecoveryTests(unittest.TestCase):
                  patch.object(setup_run,'classify_scene',return_value=SimpleNamespace(scene='unknown')), \
                  patch.object(setup_run,'recognize_main_menu',return_value=False), \
                  patch.object(setup_run,'locked_character',side_effect=lambda *a:goal if active['phase']=='locked' else None), \
-                 patch.object(setup_run,'focused_tile',return_value=1), \
+                 patch.object(setup_run,'focused_tile',return_value=focused), \
                  patch.object(setup_run,'BackgroundController') as controller:
-                result=setup_run.prepare_next(root/'game',root=root,character_slot=27,weapon='SMG',record=False)
+                result=setup_run.prepare_next(root/'game',root=root,character_slot=requested,weapon='SMG',record=False)
             self.assertIsNone(result['error'],result)
-            self.assertEqual([c.args[0] for c in controller.return_value.tap_menu.call_args_list],['up','enter','enter'])
-            self.assertEqual(result['context']['character_slot'],1)
+            self.assertEqual([c.args[0] for c in controller.return_value.tap_menu.call_args_list],[first_key,'enter','enter'])
+            self.assertEqual(result['context']['character_slot'],focused)
             self.assertFalse(result['context']['unlock_goals'][0]['completion_verified'])
             self.assertTrue((root/'artifacts/local-learning/unlock-goals.jsonl').exists())
 

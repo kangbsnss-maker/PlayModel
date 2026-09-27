@@ -23,9 +23,19 @@ class CampaignTests(unittest.TestCase):
     def test_rotation_covers_calibrated_slots_weapon_positions_and_concepts(self):
         with tempfile.TemporaryDirectory() as directory:
             campaign = LearningCampaign(Path(directory) / 'campaign.json')
-            for cursor, slot, weapon, concept in [(49, 50, '@rotate:0', CONCEPTS[0]),
+            for cursor, slot, weapon, concept in [(49, 50, '@rotate:1', CONCEPTS[1]),
                     (50, 1, '@rotate:1', CONCEPTS[0]), (600, 1, '@rotate:0', CONCEPTS[1]),
                     (1200, 1, '@rotate:0', CONCEPTS[2]), (1800, 1, '@rotate:0', CONCEPTS[0])]:
                 campaign.state['cursor'] = cursor
                 actual = campaign.current()
                 self.assertEqual((actual['character_slot'], actual['weapon'], actual['concept']), (slot, weapon, concept))
+            first=[]
+            combinations=set()
+            for cursor in range(1800):
+                campaign.state['cursor']=cursor
+                item=campaign.current()
+                combinations.add((item['character_slot'],item['weapon'],item['concept']))
+                if cursor<3:first.append(item)
+            self.assertEqual(len(combinations),1800)
+            self.assertEqual(len({item['concept'] for item in first}),3)
+            self.assertEqual(len({item['weapon'] for item in first}),3)

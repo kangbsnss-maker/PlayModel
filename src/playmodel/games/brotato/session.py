@@ -112,8 +112,11 @@ def calibrated_rules() -> TerminalRules:
         "rules": [
             {'kind':'death','all_text':['RUNLOST','Killedby'],
              'regions':{'RUNLOST':[.3,.12,.7,.26],'Killedby':[.39,.30,.61,.44]}},
-            {'kind':'death','all_text':['RUNLOST','KiIIedby'],
-             'regions':{'RUNLOST':[.3,.12,.7,.26],'KiIIedby':[.39,.30,.61,.44]}},
+              {'kind':'death','all_text':['RUNLOST','KiIIedby'],
+               'regions':{'RUNLOST':[.3,.12,.7,.26],'KiIIedby':[.39,.30,.61,.44]}},
+              # Original 20260927T191500Z-7d762eca omitted the title only.
+              {'kind':'death','all_text':['KiIIedby','Ok'],
+               'regions':{'KiIIedby':[.39,.30,.61,.44],'Ok':[.34375,.605,.65625,.667]}},
             {"kind": "wave_clear", "all_text": ["Shop", "GO"],
              "regions": {"Shop": [0, 0, .25, .12], "GO": [.76, .75, .99, .99]},
              "forbidden_text": ["Resume", "Options"]},

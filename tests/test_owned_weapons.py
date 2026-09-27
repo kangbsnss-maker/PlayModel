@@ -1,6 +1,9 @@
 from copy import deepcopy
 import unittest
 import time
+import json
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock,patch
 from playmodel.games.brotato.owned_weapons import verify_operation, same,OwnedWeaponLearning,inventory_equal
@@ -9,6 +12,17 @@ from playmodel.games.brotato.setup_run import focused_tile
 
 
 class OwnedWeaponTests(unittest.TestCase):
+    def test_first_owned_input_creates_macro_directory_and_preserves_ledger(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)/'run'/'macro-actions'
+            inventory=OwnedWeaponLearning(SimpleNamespace(output_directory=output))
+            inventory.last_key=('right','recover_unowned_hover',{'observed_at_ns':100})
+            inventory.sent(101,102)
+            inventory.sent(103,104)
+            rows=[json.loads(line) for line in (output/'owned-inputs.jsonl').read_text().splitlines()]
+            self.assertEqual([row['sent_at_ns'] for row in rows],[102,104])
+            self.assertIsNone(rows[0]['decision_id'])
+
     def test_single_owned_weapon_focus_does_not_require_a_runner_up(self):
         pixels=bytes([200,200,200,255])*100*100
         self.assertEqual(focused_tile(pixels,100,{0:(0,0,96,96)}),0)

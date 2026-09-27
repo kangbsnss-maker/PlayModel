@@ -9,6 +9,21 @@ from playmodel.learning.worker import child_file,database,enqueue
 
 
 class BackgroundLearningTests(unittest.TestCase):
+    def test_death_without_title_requires_both_body_and_confirmation_regions(self):
+        from playmodel.games.brotato.menu import classify_scene
+        from playmodel.games.brotato.session import calibrated_rules
+        words=[{'text':'KiIIed by:','x':876,'y':365,'width':166,'height':40},
+               {'text':'Ok','x':936,'y':671,'width':50,'height':30}]
+        report={'text':'KiIIed by: Ok','lines':[{'words':[word]} for word in words]}
+        rules=calibrated_rules()
+        self.assertEqual(classify_scene(report).scene,'death')
+        self.assertEqual(rules.classify(report['text'],lines=report['lines'],image_size=(1920,1080)),'death')
+        words[1]['y']=850
+        self.assertEqual(classify_scene(report).scene,'unknown')
+        self.assertIsNone(rules.classify(report['text'],lines=report['lines'],image_size=(1920,1080)))
+        words[1]['y']=671;words[0]['y']=850
+        self.assertEqual(classify_scene(report).scene,'unknown')
+
     def test_death_font_variant_requires_positioned_anchors(self):
         from playmodel.games.brotato.menu import classify_scene
         from playmodel.games.brotato.session import calibrated_rules

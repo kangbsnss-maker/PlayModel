@@ -68,6 +68,14 @@ def focused_tile(pixels: bytes, width: int, boxes: dict, *, low=145, high=245) -
             and (len(scores)==1 or scores[1][0]<.35) else None)
 
 
+def ranked_weapon_rotation(names,profiles,traits,offset):
+    """Explore each observed legal weapon, ordered by character affinity."""
+    from .character_context import affinity
+    scores={name:affinity(traits,' '.join(profiles[name]['text'])) for name in names}
+    ranked=sorted(names,key=lambda name:-scores[name])
+    return ranked[offset % len(ranked)],scores
+
+
 def locked_character(pixels, width, ocr):
     """Calibrated dark focused tile plus locked-card condition, never dimness alone."""
     header=''.join(rows_in_region(ocr,(500,60,1450,160))).casefold()
@@ -156,7 +164,8 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                             stream.write(json.dumps(goal,ensure_ascii=False)+'\n')
                         context['unlock_goals']=unlock_goals
                         # Leave the locked tile using arrows; never confirm a lock.
-                        character_slot=1 if locked['slot']!=1 else 2
+                        if locked['slot']==character_slot:
+                            character_slot=1 if locked['slot']!=1 else 2
                         attempted_slot=None
                         slot=locked['slot']
                         locked_pending=None
@@ -255,10 +264,9 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                         cycle_complete = repeated and len(weapon_names)>1 and name==weapon_names[0]
                         if preferred_weapon is None and (cycle_complete or len(weapon_names)>=12 or scan_stalled):
                             offset=int(weapon.split(':',1)[1]) % len(weapon_names)
-                            order=weapon_names[offset:]+weapon_names[:offset]
-                            preferred_weapon=max(order,key=lambda n:affinity(context['traits'],' '.join(weapon_profiles[n]['text'])))
-                            context['weapon_character_affinity']={n:affinity(context['traits'],' '.join(p['text'])) for n,p in weapon_profiles.items()}
-                            context['weapon_choice_semantics']='display_trait_affinity_hint_not_optimal_build'
+                            preferred_weapon,scores=ranked_weapon_rotation(weapon_names,weapon_profiles,context['traits'],offset)
+                            context['weapon_character_affinity']=scores
+                            context['weapon_choice_semantics']='rotate_observed_legal_weapons_ranked_by_trait_affinity_not_optimal_build'
                             context['weapon_scan_complete']=cycle_complete
                         choose_weapon = name and preferred_weapon == name
                     else:
@@ -267,7 +275,7 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                     if choose_weapon:
                         context.update(weapons=[name],weapon_source=str(source),concept=concept or name+'-build',
                                        requested_weapon=weapon, observed_weapon_names=list(weapon_names),
-                                       weapon_rotation_match=rotation_match if rotating else None)
+                                        weapon_rotation_match=(preferred_weapon==name if preferred_weapon else rotation_match) if rotating else None)
                         key='enter'
                     else:
                         key=('left' if preferred_weapon in weapon_names and name in weapon_names

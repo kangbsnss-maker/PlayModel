@@ -68,6 +68,12 @@ ENGLISH_OCR_VARIANTS = {
     'difficulty': (('DifficuItyselection', (600,60,1400,170)), ('DifficuIty', (1350,180,1770,320))),
 }
 
+# 20260927T191500Z-7d762eca: large RUN LOST title omitted by WinRT.
+# Both independently positioned body/confirmation anchors remain readable.
+ENGLISH_BODY_ANCHORS = {
+    'death': (('KiIIedby',(760,330,1150,460)),('Ok',(660,654,1260,720))),
+}
+
 
 @dataclass(frozen=True)
 class MenuScene:
@@ -92,7 +98,8 @@ def classify_scene(report: dict, width: int = 1920, height: int = 1080) -> MenuS
                         or not (0 <= x < x + w <= width and 0 <= y < y + h <= height)):
                     raise ValueError("invalid OCR geometry")
         matches = {}
-        for scene, anchors in list(ANCHORS.items()) + list(ENGLISH_ANCHORS.items()) + list(ENGLISH_OCR_VARIANTS.items()):
+        for scene, anchors in (list(ANCHORS.items()) + list(ENGLISH_ANCHORS.items())
+                               + list(ENGLISH_OCR_VARIANTS.items()) + list(ENGLISH_BODY_ANCHORS.items())):
             found = tuple(token for token, region in anchors
                           if any(token.casefold() in "".join(unicodedata.normalize("NFKC", row).split()).casefold()
                                  for row in rows_in_region(report, region)))

@@ -333,6 +333,7 @@ class OwnedWeaponLearning:
             raise ValueError('Owned weapon input was stale')
         self.last_sent_at=finished
         if self.menu.output_directory:
+            self.menu.output_directory.mkdir(parents=True, exist_ok=True)
             path=self.menu.output_directory/'owned-inputs.jsonl'
             record={'key':key,'reason':reason,'source':seen,
                     'decision_id':self.decision['decision_id'] if self.decision else None,

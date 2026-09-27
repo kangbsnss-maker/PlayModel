@@ -18,8 +18,9 @@ class LearningCampaign:
     def current(self):
         cursor = self.state['cursor']
         return {'index': cursor, 'character_slot': 1 + cursor % 50,
-                'weapon': '@rotate:' + str((cursor // 50) % 12),
-                'concept': CONCEPTS[(cursor // 600) % len(CONCEPTS)],
+                'weapon': '@rotate:' + str((cursor % 50 + cursor // 50) % 12),
+                'concept': CONCEPTS[(cursor % 50 + cursor // 600) % len(CONCEPTS)],
+                'schedule': 'interleaved_character_weapon_concept_v2',
                 'coverage_scope': 'calibrated_slots_and_observed_available_weapons_not_all_unlocks'}
 
     def record(self, report):
