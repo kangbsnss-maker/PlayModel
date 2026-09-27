@@ -965,7 +965,7 @@ def _runtime_contract(root):
         'neural_choices.py', 'neural_menu_controller.py', 'state_features.py',
         'stats_roi_ocr.py', 'shop_learning.py', 'shop_currency_ocr.py',
         'pilot.py', 'menu_capture.py', 'ocr.py', 'capture.py', 'stream.py',
-          'background.py', 'interaction.py', 'setup_run.py', 'ui_layers.py', 'combat_experience.py')}
+          'background.py', 'interaction.py', 'setup_run.py', 'ui_layers.py', 'combat_experience.py', 'evasion_dataset.py')}
     for filename in ('src/playmodel/control/realtime.py',
                        'src/playmodel/learning/full_run.py', 'src/playmodel/learning/recurrent_ppo.py',
                          'src/playmodel/learning/visual_decision.py',

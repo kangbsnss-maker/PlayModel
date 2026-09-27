@@ -7,6 +7,8 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import math
+import uuid
+from .evasion_dataset import context, candidates
 
 
 def bar_crop(frame, position, radius):
@@ -43,6 +45,8 @@ class CombatExperience:
         self.motion_samples = int((motion_state or {}).get('samples', 0))
         self.bar_decay = (motion_state or {}).get('bar_decay_per_second')
         self.last_execution = None
+        self.context_epoch = uuid.uuid4().hex
+        self.viewport = None
 
     def record_execution(self, receipt):
         # Atomic reference replacement; recorder thread never mutates observations.
@@ -58,8 +62,11 @@ class CombatExperience:
         now = world['observed_at_ns']
         old = self.previous
         dt = (now-old['observed_at_ns'])/1e9 if old else None
-        if dt is None or not .005 <= dt <= .3:
+        viewport = (frame.metadata['sample_width'], frame.metadata['sample_height'])
+        if dt is None or not .005 <= dt <= .3 or viewport != self.viewport or world.get('reset_reason'):
             self.tracks, old = {}, None
+            self.context_epoch = uuid.uuid4().hex
+        self.viewport = viewport
         objects, motion, bar_pairs = [], [], []
         target_hp_drop = 0.
         for track in world['tracks'][:8]:
@@ -116,6 +123,8 @@ class CombatExperience:
                   'movement_not_observed': list(self.blocked), 'map_boundary_verified': False,
                   'motion_model_samples': self.motion_samples, 'motion_scale': self.motion_scale,
                   'stats': world.get('stats', {}), 'reward_eligible': False}
+        result['environment'] = context(world, frame, self.context_epoch)
+        result['evasion_candidates'] = candidates(world)
         self.tracks = {r['track_id']: r for r in objects}
         self.previous = deepcopy(result)
         return result

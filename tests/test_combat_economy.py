@@ -58,6 +58,37 @@ class EconomyTests(unittest.TestCase):
         result=self.economy.finish('wave_clear',self.evidence())
         self.assertEqual(result['curriculum']['economic_examples'],0)
 
+    def test_factorized_dataset_trains_persists_and_freezes(self):
+        from test_evasion_dataset import EvasionDatasetTests
+        evidence = self.evidence()
+        rows = EvasionDatasetTests().rows()
+        for row in rows:
+            row.update(successful_transport_reported=True, frame_ref='frame',
+                       frame_sha256=digest(self.root/'frame'))
+        actions = self.root/'actions.jsonl'
+        actions.write_text('\n'.join(json.dumps(r) for r in rows))
+        report_path = Path(evidence['report_path'])
+        report = json.loads(report_path.read_text())
+        report['actions_sha256'] = digest(actions)
+        report_path.write_text(json.dumps(report))
+        evidence['report_sha256'] = digest(report_path)
+        terminal = Path(evidence['path'])
+        content = json.loads(terminal.read_text())
+        content['observed_at_ns'] = 2000000000
+        terminal.write_text(json.dumps(content))
+        evidence['sha256'] = digest(terminal)
+        original = self.economy.model_hash
+        self.economy.finish('wave_clear', evidence, learn=False)
+        self.assertEqual(original, self.economy.model_hash)
+        self.assertEqual(list(self.economy.directory.glob('evasion-*.jsonl')), [])
+        result = self.economy.finish('wave_clear', evidence)
+        self.assertEqual(result['curriculum']['evasion_prediction_examples'], 1)
+        self.assertNotEqual(original, self.economy.model_hash)
+        state = json.loads(Path(result['record']).read_text())
+        dataset = state['evasion_dataset']
+        self.assertEqual(digest(dataset['path']), dataset['sha256'])
+        self.assertEqual(CombatEconomy(self.economy.directory).model_hash, self.economy.model_hash)
+
     def test_new_run_does_not_inherit_old_purchases(self):
         self.purchase()
         self.economy.begin_run('next')

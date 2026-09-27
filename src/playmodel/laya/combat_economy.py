@@ -12,6 +12,7 @@ from pathlib import Path
 import uuid
 
 from playmodel.learning.outcome_values import OutcomeValues
+from playmodel.games.brotato.evasion_dataset import examples as evasion_examples, features as evasion_features
 from .records import canonical, digest, verified_outcome
 
 
@@ -29,6 +30,7 @@ class CombatEconomy:
         states = sorted(self.directory.glob('revision-*.json'))
         state = json.loads(states[-1].read_text(encoding='utf8')) if states else {}
         self.values = OutcomeValues(state.get('values'))
+        self.evasion = OutcomeValues(state.get('evasion'))
         self.motion = state.get('motion', {'velocity_scale': 1., 'samples': 0})
         self.revision = int(state.get('revision', 0))
         self.used = set(state.get('used_outcomes', []))
@@ -40,7 +42,7 @@ class CombatEconomy:
     def _snapshot(self):
         self.snapshot_path = self.directory / ('snapshot-' + uuid.uuid4().hex + '.json')
         with self.snapshot_path.open('x', encoding='utf8') as stream:
-            json.dump({'values': self.values.state(), 'motion': self.motion, 'model_hash': self.model_hash},
+            json.dump({'values': self.values.state(), 'evasion': self.evasion.state(), 'motion': self.motion, 'model_hash': self.model_hash},
                       stream, allow_nan=False)
 
     def model_evidence(self):
@@ -49,7 +51,7 @@ class CombatEconomy:
 
     @property
     def model_hash(self):
-        return hashlib.sha256(canonical({'values': self.values.state(), 'motion': self.motion}).encode()).hexdigest()
+        return hashlib.sha256(canonical({'values': self.values.state(), 'evasion': self.evasion.state(), 'motion': self.motion}).encode()).hexdigest()
 
     def begin_run(self, run_id):
         if self.run_id != run_id:
@@ -160,6 +162,15 @@ class CombatEconomy:
             credited.append(deepcopy(row))
             row['age_waves'] += 1
         before = self.model_hash
+        evasion_rows = evasion_examples(valid, self.run_id)
+        evasion_training = [(evasion_features(r), math.tanh(r['target']['clearance_proxy']))
+                            for r in evasion_rows if r['target']['clearance_proxy'] is not None]
+        # Auxiliary prediction only. This is not a safe-action label or policy reward.
+        self.evasion.fit(evasion_training)
+        dataset_path = self.directory / ('evasion-' + uuid.uuid4().hex + '.jsonl')
+        with dataset_path.open('x', encoding='utf8') as stream:
+            for row in evasion_rows:
+                stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False)+'\n')
         self.values.fit(examples)
         if pairs >= 8 and norm > 1e-6:
             self.motion = {**self.motion, 'velocity_scale': max(.5, min(1.5, dot/norm)),
@@ -177,11 +188,16 @@ class CombatEconomy:
         self.revision += 1
         state = {'schema': 'playmodel.combat-economy.v1', 'revision': self.revision,
                  'run_id': self.run_id, 'values': self.values.state(), 'motion': self.motion,
+                 'evasion': self.evasion.state(),
                  'used_outcomes': sorted(self.used), 'summary': summary,
                  'model_hash_before': before, 'model_hash_after': self.model_hash,
                  'dataset': {'outcome': evidence, 'actions_path': str(actions),
                              'actions_sha256': digest(actions), 'choices': credited},
+                 'evasion_dataset': {'path': str(dataset_path), 'sha256': digest(dataset_path),
+                     'rows': len(evasion_rows), 'split_group': self.run_id,
+                     'semantics': 'observational_next_frame_clearance_not_safe_action_policy'},
                  'curriculum': {'motion_pairs': pairs, 'economic_examples': len(examples),
+                     'factorized_evasion_rows': len(evasion_rows), 'evasion_prediction_examples': len(evasion_training),
                      'bar_prediction_examples': len(decay),
                      'hp_labeled_examples': 0, 'confirmed_kills': 0, 'confirmed_pickups': 0,
                      'unsupported_semantics_remain_unknown': True},
