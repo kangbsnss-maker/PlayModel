@@ -19,6 +19,14 @@ from .menu_transition import MenuTransitionGate
 CHARACTER_GRID = {i:(69+(i%17)*106,723+(i//17)*106,165+(i%17)*106,819+(i//17)*106) for i in range(51)}
 
 
+def is_main_menu(ocr, pixels, width, height):
+    if (width, height) != (1920, 1080):
+        return False
+    text=''.join(rows_in_region(ocr,(25,600,310,1030))).casefold()
+    selected=pixels[(640*width+48)*4:(640*width+48)*4+3]
+    return all(word in text for word in ('start','profile','options','quit')) and len(selected)==3 and min(selected)>180
+
+
 def focused_tile(pixels: bytes, width: int, boxes: dict) -> int | None:
     scores=[]
     for index,(left,top,right,bottom) in boxes.items():
@@ -46,6 +54,7 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
     weapon_names=[]
     character_mismatch_observations=0
     error=None
+    recovery_wait=None
     transition_gate=MenuTransitionGate()
     with session_lock(root/'artifacts/brotato-input.lock'), MenuOcr(root/'scripts/windows_ocr.ps1') as menu_reader, MenuCapture(executable) as menu_capture:
         try:
@@ -59,15 +68,20 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                     continue
                 source=Path(shot['session_directory'])/'frame.png'
                 ocr=menu_reader.read(source)
+                (source.parent/'setup-ocr.json').write_text(json.dumps(ocr,ensure_ascii=False),encoding='utf-8')
                 if (w,h)!=(1920,1080): raise OSError('Setup resolution changed')
                 if controller is None: controller=BackgroundController(shot['hwnd'],executable)
                 header=''.join(rows_in_region(ocr,(500,60,1450,160))).casefold()
                 scene=classify_scene(ocr).scene
-                if scene=='result':
+                if is_main_menu(ocr,pixels,w,h):
+                    recovery_wait=None
+                    key='enter'
+                elif scene=='result':
                     focus=selected_button(pixels,w,h,scene='result')
                     if focus.selected_id is None: raise OSError('Result focus unknown')
                     key='enter' if focus.selected_id=='new_run' else navigation_key(focus.rect,BUTTONS['result']['new_run'])
                 elif 'characterselection' in header:
+                    recovery_wait=None
                     slot=focused_tile(pixels,w,CHARACTER_GRID)
                     if slot is None: raise OSError('Character selection focus unknown')
                     if attempted_slot==slot:
@@ -91,9 +105,23 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                         attempted_slot=slot
                 elif 'selection' in header and ('diffic' in header):
                     # Leave on this screen: the recorded gameplay session selects highest difficulty.
-                    context['difficulty_menu_source']=str(source)
-                    context['setup_complete']=True
-                    break
+                    if not context.get('character_source') or not context.get('weapon_source'):
+                        # Interrupted setup: return through the observed pre-run
+                        # menus and collect fresh character/weapon evidence.
+                        if recovery_wait is not None:
+                            continue
+                        key='escape'
+                        recovery_wait='weapon'
+                    else:
+                        context['difficulty_menu_source']=str(source)
+                        context['setup_complete']=True
+                        break
+                elif ('back' in ''.join(rows_in_region(ocr,(20,20,300,100))).casefold()
+                      and context['character']=='Unknown'):
+                    if recovery_wait=='character':
+                        continue
+                    key='escape'
+                    recovery_wait='character'
                 elif 'back' in ''.join(rows_in_region(ocr,(20,20,300,100))).casefold():
                     name=' '.join(rows_in_region(ocr,(1290,180,1520,220))).strip()
                     # This is the calibrated weapon-card layout, with character name in the left card.
@@ -118,7 +146,7 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                 if recording and key=='enter': recording.event('menu_choice','다음 판의 캐릭터·무기 조건을 선택합니다.',context=dict(context))
                 if time.perf_counter_ns()-shot['capture_started_at_ns']>2_500_000_000: raise OSError('Setup observation expired')
                 controller.tap_menu(key)
-                transition_gate.record(shot['frame_sha256'],key,posted_at_ns=time.perf_counter_ns())
+                transition_gate.record(shot['frame_sha256'],'enter' if key=='escape' else key,posted_at_ns=time.perf_counter_ns())
             else:
                 raise OSError('Setup observation budget exhausted')
         except Exception as exc:

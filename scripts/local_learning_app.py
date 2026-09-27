@@ -22,7 +22,7 @@ CONFIG = ROOT / 'configs/local/learner-launch.json'
 RUNTIME = ROOT / 'artifacts/local-learning'
 STOP = ROOT / 'artifacts/BROTATO_STOP'
 LOCK = RUNTIME / 'worker.lock'
-PHASES = {'initializing': '준비', 'cycle_start': '다음 학습 준비',
+PHASES = {'initializing': '준비', 'obs_start': 'OBS 실행·연결', 'cycle_start': '다음 학습 준비',
           'new_run_setup': '캐릭터·무기·난이도 선택', 'combat': '전투 경험 수집',
           'menu': '성장·상점 선택', 'training': '가중치 학습',
           'training_worker_started': '별도 학습 작업 준비',

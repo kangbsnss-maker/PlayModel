@@ -367,6 +367,7 @@ class LocalCycle:
         from playmodel.games.brotato.ocr import MenuOcr
         from playmodel.games.brotato.menu import classify_scene
         from playmodel.games.brotato.vision import BrotatoVision
+        from playmodel.games.brotato.setup_run import is_main_menu
         with MenuCapture(self.executable) as capture, MenuOcr(self.ocr_script) as ocr:
             for _ in range(3):
                 if self.stop_file.exists():
@@ -376,8 +377,18 @@ class LocalCycle:
                 raw = ocr.read(source)
                 _save_json(source.parent / 'startup-ocr.json', raw)
                 scene = classify_scene(raw, width=width, height=height).scene
+                if is_main_menu(raw,pixels,width,height):
+                    return 'main_menu'
                 if scene != 'unknown':
                     return scene
+                from playmodel.games.brotato.menu import rows_in_region
+                header=''.join(rows_in_region(raw,(500,60,1450,160))).casefold()
+                if 'characterselection' in header:
+                    return 'character_selection'
+                back=''.join(rows_in_region(raw,(20,20,300,100))).casefold()
+                weapon_text=''.join(rows_in_region(raw,(1180,180,1550,460))).casefold()
+                if 'back' in back and 'damage' in weapon_text and 'range' in weapon_text:
+                    return 'weapon_selection'
                 # Use the original capture; BrotatoVision bounds its own grid.
                 # A second downsample can create artificial player ambiguity.
                 vision = BrotatoVision().observe(pixels, width, height,
@@ -410,7 +421,7 @@ class LocalCycle:
                 record=True, edit=False, combat_runner=no_combat)
             if acknowledged["reason"] != "run_finished":
                 raise OSError("Old death did not reach a verified result screen")
-        elif scene != "result":
+        elif scene not in ("result", "difficulty", "main_menu", "character_selection", "weapon_selection"):
             raise OSError("A new cycle requires a result/death screen; the active run is preserved")
         setup = prepare_next(self.executable, root=self.root, character_slot=self.character_slot,
                              weapon=self.weapon, record=True)

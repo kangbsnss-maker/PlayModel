@@ -121,6 +121,9 @@ def run_online(args, root):
     directory.mkdir(parents=True, exist_ok=bool(resume))
     status = LocalStatus(directory)
     try:
+        from playmodel.obs import ensure_obs_running
+        status.update(phase='obs_start')
+        ensure_obs_running()
         settings = {name: getattr(args, name) for name in ('character_slot', 'weapon', 'evaluation_runs')}
         if resume:
             state = OnlineState(directory)
