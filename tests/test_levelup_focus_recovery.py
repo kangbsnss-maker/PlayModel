@@ -1,10 +1,14 @@
 from contextlib import ExitStack
+import importlib.util
 import json
 from pathlib import Path
 import tempfile
 import time
 import unittest
 from unittest.mock import Mock, patch
+
+if importlib.util.find_spec("torch") is None:
+    raise unittest.SkipTest("optional PyTorch unavailable for neural menu recovery")
 
 from playmodel.games.brotato import session
 from playmodel.games.brotato.menu import BUTTONS, ButtonSelection, selected_button
