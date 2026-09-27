@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes as w
 from pathlib import Path
+import time
 
 from .interaction import WindowController
 
@@ -51,24 +52,46 @@ class BackgroundController:
     def click(self, x: int, y: int, expected_size: tuple[int, int]):
         raise OSError("Mouse messages are unverified; use background keyboard navigation")
 
-    def _key(self, key: int, up: bool):
+    def _key(self, key: int, up: bool, *, deadline_ns=None):
         data = 1 | (self._scan(key, 0) << 16)
         if key in (0x25, 0x26, 0x27, 0x28):
             data |= 1 << 24  # Dedicated arrow keys, not keypad arrows.
         if up:
             data |= (1 << 30) | (1 << 31)
+        if deadline_ns is not None and time.perf_counter_ns() >= deadline_ns:
+            raise OSError('Background movement deadline expired before key post')
         self._message(0x0101 if up else 0x0100, key, data)
 
     def set_movement(self, keys: set[int]):
+        self._set_movement(keys)
+
+    def set_movement_before(self, keys: set[int], *, deadline_ns: int):
+        """The same input authority, with a final freshness check before each post."""
+        self._set_movement(keys, deadline_ns=deadline_ns)
+
+    def _set_movement(self, keys: set[int], *, deadline_ns=None):
         if not keys <= {0x57, 0x41, 0x53, 0x44}:
             raise ValueError("Background movement allows WASD only")
+        timing = {'started_at_ns': time.perf_counter_ns(), 'deadline_ns': deadline_ns,
+                  'check_finished_at_ns': None, 'posts_finished_at_ns': None, 'posted_keys': 0}
+        self.last_movement_timing = timing
         self.check()
+        timing['check_finished_at_ns'] = time.perf_counter_ns()
+        if deadline_ns is not None and timing['check_finished_at_ns'] >= deadline_ns:
+            raise OSError('Background movement deadline expired during identity check')
+        def key_message(key, up):
+            if deadline_ns is None:
+                self._key(key, up)
+            else:
+                self._key(key, up, deadline_ns=deadline_ns)
+            timing['posted_keys'] += 1
         for key in self.held - keys:
-            self._key(key, True)
+            key_message(key, True)
             self.held.remove(key)
         for key in keys - self.held:
-            self._key(key, False)
+            key_message(key, False)
             self.held.add(key)
+        timing['posts_finished_at_ns'] = time.perf_counter_ns()
 
     def tap_menu(self, key: str):
         keys = {"left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28, "enter": 0x0D, "escape": 0x1B, "tab": 0x09, "reroll": 0x46}

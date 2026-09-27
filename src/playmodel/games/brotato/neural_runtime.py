@@ -222,11 +222,19 @@ class NeuralMovementSink:
         attempt['transport_started_at_ns'] = started
         self.transport_attempts.append(attempt)
         try:
-            self.background.set_movement(keys)
+            bounded = getattr(self.background, 'set_movement_before', None)
+            if bounded is not None:
+                bounded(keys, deadline_ns=deadline_ns)
+            else:
+                self.background.set_movement(keys)
         except Exception as error:
             attempt['transport_finished_at_ns'] = time.perf_counter_ns()
             attempt['error'] = type(error).__name__
             raise
+        finally:
+            stages = getattr(self.background, 'last_movement_timing', None)
+            if isinstance(stages, dict):
+                attempt['background_stages'] = dict(stages)
         sent = time.perf_counter_ns()
         attempt['transport_finished_at_ns'], attempt['transmitted'] = sent, True
         action.transport_started_at_ns, action.sent_at_ns, action.generation = started, sent, generation

@@ -51,9 +51,20 @@ class WindowController:
             buffer, size = ctypes.create_unicode_buffer(32768), w.DWORD(32768)
             if not self.image_name(process, 0, buffer, ctypes.byref(size)):
                 raise OSError("Could not verify game executable")
-            return pid.value, os.path.normcase(str(Path(buffer.value).resolve()))
+            return pid.value, self._canonical_image_path(buffer.value)
         finally:
             self.close_handle(process)
+
+    def _canonical_image_path(self, raw_path):
+        # Query the process on every check, but do not repeatedly walk the
+        # filesystem for the exact same OS-reported executable name. PID and
+        # changed image names still undergo their original identity checks.
+        cached = getattr(self, '_image_path_cache', None)
+        if cached is not None and cached[0] == raw_path:
+            return cached[1]
+        canonical = os.path.normcase(str(Path(raw_path).resolve()))
+        self._image_path_cache = raw_path, canonical
+        return canonical
 
     def _retired(self, *args, **kwargs):
         raise OSError("Foreground input retired: use HWND-only BackgroundController")
