@@ -67,6 +67,7 @@ class CombatEconomy:
 
     def features(self, state, option):
         return {'choice': option, 'wave': state.get('wave'), 'currency': state.get('currency'),
+                'character': state.get('character'),
                 'intent': state.get('training_intent'), 'weapons': ','.join(state.get('weapon_names', [])),
                 **{f'stat:{key}': val for key,val in state.get('last_observed_stats', {}).items()},
                 **{f'combat:{key}': val for key,val in self.summary.items() if isinstance(val,(int,float))}}

@@ -516,6 +516,8 @@ class LocalCycle:
                                checkpoint=str(checkpoint), run_directory=str(directory),
                                recorded_transitions=0, last_combat_outcome=None)
         recorder = FullRunRecorder(model, run_id, split=split, start_evidence=start)
+        from playmodel.games.brotato.character_context import validated_context
+        recorder.character_context = validated_context(context)
         if recorder.build_state is not None and not partial and context.get('weapon_source'):
             weapon_source = Path(context['weapon_source']).resolve()
             weapon_observation = json.loads((weapon_source.parent / 'observation.json').read_text(encoding='utf-8'))
@@ -579,6 +581,7 @@ class LocalCycle:
                            'released observation gap excluded from learning and evaluation')
             recorder = FullRunRecorder(model, run_id, split=split)
             recorder.build_state = previous_build
+            recorder.character_context = validated_context(context)
             if choice_backend:
                 from playmodel.games.brotato.laya_menu import CNN_EXCLUSION
                 recorder.invalidate(CNN_EXCLUSION)
@@ -670,6 +673,7 @@ class LocalCycle:
                                    'interrupted recovery history excluded from learning and evaluation')
                     recorder = FullRunRecorder(model, run_id, split=split)
                     recorder.build_state = previous_build
+                    recorder.character_context = validated_context(context)
                     if mixed_gap:
                         from playmodel.games.brotato.laya_menu import CNN_EXCLUSION
                         recorder.invalidate(CNN_EXCLUSION)
@@ -965,7 +969,7 @@ def _runtime_contract(root):
         'neural_choices.py', 'neural_menu_controller.py', 'state_features.py',
         'stats_roi_ocr.py', 'shop_learning.py', 'shop_currency_ocr.py',
         'pilot.py', 'menu_capture.py', 'ocr.py', 'capture.py', 'stream.py',
-          'background.py', 'interaction.py', 'setup_run.py', 'ui_layers.py', 'combat_experience.py', 'evasion_dataset.py')}
+          'background.py', 'interaction.py', 'setup_run.py', 'ui_layers.py', 'combat_experience.py', 'evasion_dataset.py', 'character_context.py')}
     for filename in ('src/playmodel/control/realtime.py',
                        'src/playmodel/learning/full_run.py', 'src/playmodel/learning/recurrent_ppo.py',
                          'src/playmodel/learning/visual_decision.py',

@@ -48,6 +48,8 @@ class LayaMenuController(NeuralMenuController):
             options[candidate.candidate_id] = text
         frame = Path(current.frame_id)
         build = self.recorder.build_state.snapshot() if self.recorder.build_state else {}
+        character = getattr(self.recorder, 'character_context', {})
+        from .character_context import affinity
         state = {'game': 'Brotato', 'scene': current.scene, 'wave': current.wave,
                  'training_intent': getattr(self, 'training_intent', 'survive and progress'),
                  'currency': current.currency, 'weapon_fill': current.weapon_fill,
@@ -57,6 +59,12 @@ class LayaMenuController(NeuralMenuController):
                  'weapon_names': [weapon['name'] for weapon in build.get('weapons', [])],
                  'weapon_count': build.get('weapon_count'),
                  'unknown': 'missing stats; current HP; item effects; unlisted inventory'}
+        if character:
+            state['character'] = character['name']
+            state['trait_fit'] = {key:affinity(character['traits'],text) for key,text in options.items()}
+            # Full raw traits and source remain in evidence, beyond token budget.
+            state.pop('unknown')
+            state.pop('previous_actual_movement')
         if self.economy is not None:
             state['combat_memory'] = {key: self.economy.summary[key] for key in (
                 'tracked', 'hp_drop_proxy', 'target_hp_drop_proxy', 'visible_duration_proxy',
@@ -68,6 +76,8 @@ class LayaMenuController(NeuralMenuController):
                     'game_build_id': current.game_build_id, 'ocr_sha256': current.ocr_sha256,
                     'run_id': self.recorder.run_id, 'build_snapshot': build,
                     'candidates': [asdict(candidate) for candidate in current.candidates]}
+        if character:
+            evidence['character_context'] = character
         if self.economy is not None:
             evidence['economic_model'] = self.economy.model_evidence()
         result = self.client.choose(state, options, evidence)

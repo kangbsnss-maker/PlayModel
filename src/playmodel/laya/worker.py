@@ -78,9 +78,12 @@ class Learner:
             validate_resume_report(bundle)
             if any(key.startswith('visual_context.') for key in bundle['head']):
                 if bundle.get('graph_hash') != self.graph_hash:
-                    from .graph_migration import validate_object_branch_migration
-                    migration = validate_object_branch_migration(bundle)
-                    object_migration = True
+                    from .graph_migration import validate_object_branch_migration, validate_character_provenance_migration
+                    if bundle.get('graph_hash') == 'ce5add78e12e558691a18b2ca7d4700dd46cdf87125612201ab526cafe908e80':
+                        migration = validate_character_provenance_migration(bundle, self.graph_sources)
+                    else:
+                        migration = validate_object_branch_migration(bundle)
+                        object_migration = True
                     _save(self.output / 'graph-migration.json', {
                         **migration, 'checkpoint': str(Path(checkpoint).resolve()),
                         'checkpoint_sha256': digest(checkpoint), 'new_graph_hash': self.graph_hash})
@@ -425,6 +428,10 @@ class Learner:
                     proofs.append({'path': receipt['ownership_receipt_path'],
                                    'sha256': receipt['ownership_receipt_sha256']})
             observation = record['evidence']
+            character = observation.get('character_context')
+            if character:
+                from playmodel.games.brotato.character_context import validate_choice_character
+                proofs.append(validate_choice_character(character, observation['observed_at_ns']))
             economic = observation.get('economic_model')
             if economic:
                 if digest(economic['path']) != economic['sha256']:

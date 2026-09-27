@@ -359,3 +359,31 @@ _safe_recovery_release는 controller_guard만 허용하고 모든 safety_reason�
 F8/사람 조작/최소화/부분 전송/해제 실패는 복구 대상으로 넓히지 않는다.
 검사: scheduling recovery 10개, neural runtime 22개 PASS. 보존된 실제 실패 원본으로
 artifacts/verify_independent_watchdog.py 복구 증거 확인. 원본 보고서 변경 없음.
+
+### 잠금 캐릭터 선택 보류와 캐릭터별 선택 조건 — 2026-09-28
+
+실패 원본: run-setup/20260927T164218Z-setup-aca839, frame 20260927T164223Z-9f9bba09.
+27번 잠금 테두리 BGRA의 BGR은 122/124/126. 기존 포커스 하한145에서 탈락하여
+Character selection focus unknown으로 전체 학습이 보류됐다. 잠금 조건 카드의
+레이아웃·원문·이름 부재·유일한 어두운 선택 테두리를 함께 검사한다. 같은 대상의
+후속 독립 관측 두 개로 확인한 뒤 화살표로 다른 캐릭터를 선택하고 잠금에는 Enter를 보내지 않는다.
+원문 Recycle12weapons duringarun은 한 판에서 무기12개 재활용 조건으로 저장한다.
+artifacts/local-learning/unlock-goals.jsonl에 출처와 미완료 상태 보존. 다른 조건은 원문만
+보존하고 추측하지 않는다. 무기 재활용 조작은 현재 미지원이므로 조건 자동달성을 주장하지 않는다.
+
+캐릭터 원본/traits를 새 run과 복구 recorder에 전달한다. 시작 무기는 관측 후보의 명시적
+양수/음수 능력치 특성 일치를 비교하는 초기 휴리스틱. 완전한 빌드 해석이나 최적값 아님.
+상점/레벨업/아이템 선택에 캐릭터명·특성 적합도를 넣고 구매 가치 회귀도 캐릭터로 조건화한다.
+RangedDamage와 Range 혼동을 배제한다. 방향키 후 같은 카드이면 대기하며 첫 카드로
+돌아온 실제 관측만 순회 완료로 표시한다. 제한된 관측만 있으면 coverage 미완료를 기록한다.
+원본 전체 특성은 판단 증거에 보존하며 학습 직전에 프레임 해시/인과시간 재검증, manifest 포함.
+검증된 이전 graph ce5add78...만 가중치 그대로 이전. 실제 CUDA에서 기존 가중치 보존 확인,
+새 graph 74493dcde730a7b213b87a4ca0fca287dc5c0b25b611f6a6da9f243b55ff5883.
+기존 메뉴 자료6개 재인코딩 최대453/512 tokens. 실제 잠금 화면 parser 검증 통과.
+전체 준비 검사715개 PASS(75.408초), 추가 잠금 메뉴 시나리오 포함 setup 검사3개 PASS.
+실게임 재개 f3fc0b에서 잠금27번 이중 관측→Well-Rounded 선택 성공과 특성 원문 확인.
+그 뒤 무기 후보 비교 완료 후 오른쪽만 보내던 경로가 끝 카드에서 멈춘 실패를 확인했다.
+관측된 후보 순서에서 선호 무기가 앞이면 left로 복귀하도록 수정. Range/RangedDamage,
+Speed/AttackSpeed 양쪽 존재·수치 매칭을 가장 긴 효과명 구분으로 통일, 음성 회귀 PASS.
+최종 해당 특성3개·setup3개 검사 PASS. 조건 자동 달성 및 모든 특성 의미 해석은 미구현 범위다.
+최종 실게임 laya-20260927T165622Z-b517bf5e: Well-Rounded, Knife, setup_complete=true, 특성 +5MaxHP/+5%Speed/+8Harvesting 보존, running/combat/error=null 확인. 후보 관측 범위는 weapon_scan_complete=false로 명시.

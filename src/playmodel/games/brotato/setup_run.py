@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import time
 import uuid
+import hashlib
+import re
 
 from .background import BackgroundController
 from .capture import capture_session,read_diagnostic_png,_png
@@ -53,16 +55,33 @@ def recognize_main_menu(reader, source, ocr, pixels, width, height):
     return _main_menu_labels(text)
 
 
-def focused_tile(pixels: bytes, width: int, boxes: dict) -> int | None:
+def focused_tile(pixels: bytes, width: int, boxes: dict, *, low=145, high=245) -> int | None:
     scores=[]
     for index,(left,top,right,bottom) in boxes.items():
         samples=[(x,y) for x in (left+7,right-8) for y in range(top+22,bottom-22,3)]
         samples += [(x,y) for y in (top+7,bottom-8) for x in range(left+22,right-22,3)]
         colors=[pixels[(y*width+x)*4:(y*width+x)*4+3] for x,y in samples]
-        score=sum(145<=min(c)<=max(c)<=245 and max(c)-min(c)<=18 for c in colors)/len(colors)
+        score=sum(low<=min(c)<=max(c)<=high and max(c)-min(c)<=18 for c in colors)/len(colors)
         scores.append((score,index))
     scores.sort(reverse=True)
     return scores[0][1] if scores[0][0]>.65 and scores[1][0]<.35 else None
+
+
+def locked_character(pixels, width, ocr):
+    """Calibrated dark focused tile plus locked-card condition, never dimness alone."""
+    header=''.join(rows_in_region(ocr,(500,60,1450,160))).casefold()
+    name=''.join(rows_in_region(ocr,(210,175,975,280))).strip()
+    condition=' '.join(rows_in_region(ocr,(440,445,750,550))).strip()
+    records=''.join(rows_in_region(ocr,(760,380,1120,530))).casefold()
+    slot=focused_tile(pixels,width,CHARACTER_GRID,low=105,high=160)
+    if ('characterselection' not in header or name or not condition
+            or 'records' not in records or slot is None or slot==0):
+        return None
+    match=re.fullmatch(r'Recycle(\d+)weaponsduringarun',re.sub(r'\s+','',condition),re.I)
+    return {'slot':slot,'condition_text':condition,'status':'locked_observed',
+            'objective': {'kind':'recycle_weapons_in_one_run','count':int(match[1])}
+                         if match else None,
+            'objective_semantics':'screen_condition_not_verified_completion'}
 
 
 def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: str, record: bool,
@@ -79,10 +98,15 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
     visited=[]
     attempted_slot=None
     weapon_names=[]
+    weapon_profiles={}
+    preferred_weapon=None
+    weapon_move=None
     character_mismatch_observations=0
     error=None
     recovery_wait=None
     transition_gate=MenuTransitionGate()
+    locked_pending=None
+    unlock_goals=[]
     with session_lock(root/'artifacts/brotato-input.lock'), MenuOcr(root/'scripts/windows_ocr.ps1') as menu_reader, MenuCapture(executable) as menu_capture:
         try:
             if record: recording=SessionRecording(media,max_seconds=240)
@@ -109,7 +133,35 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                     key='enter' if focus.selected_id=='new_run' else navigation_key(focus.rect,BUTTONS['result']['new_run'])
                 elif 'characterselection' in header:
                     recovery_wait=None
-                    slot=focused_tile(pixels,w,CHARACTER_GRID)
+                    locked=locked_character(pixels,w,ocr)
+                    if locked:
+                        proof={**locked,'frame_ref':str(source),'frame_sha256':shot['frame_sha256'],
+                               'observed_at_ns':shot['capture_started_at_ns'],
+                               'available_at_ns':ocr['available_at_ns'],
+                               'target_identity':{k:shot.get(k) for k in ('hwnd','pid','executable')}}
+                        if (locked_pending is None or locked_pending['slot']!=locked['slot']
+                                or locked_pending['condition_text']!=locked['condition_text']
+                                or proof['target_identity']!=locked_pending['target_identity']
+                                or proof['observed_at_ns']<=locked_pending['available_at_ns']):
+                            locked_pending=proof
+                            continue
+                        goal={**locked,'observations':[locked_pending,proof],
+                              'completion_verified':False}
+                        unlock_goals.append(goal)
+                        visited.append(goal)
+                        ledger=root/'artifacts/local-learning/unlock-goals.jsonl'
+                        ledger.parent.mkdir(parents=True,exist_ok=True)
+                        with ledger.open('a',encoding='utf8') as stream:
+                            stream.write(json.dumps(goal,ensure_ascii=False)+'\n')
+                        context['unlock_goals']=unlock_goals
+                        # Leave the locked tile using arrows; never confirm a lock.
+                        character_slot=1 if locked['slot']!=1 else 2
+                        attempted_slot=None
+                        slot=locked['slot']
+                        locked_pending=None
+                    else:
+                        slot=focused_tile(pixels,w,CHARACTER_GRID)
+                        locked_pending=None
                     if slot is None: raise OSError('Character selection focus unknown')
                     if attempted_slot==slot:
                         visited.append({'slot':slot,'selection_not_confirmed':True,'source':str(source)})
@@ -123,7 +175,9 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                         name=' '.join(rows_in_region(ocr,(210,175,975,280))).strip()
                         if not name or 'random' in name.casefold(): raise OSError('Character name unreadable')
                         context.update(character=name,character_slot=slot,character_source=str(source),
-                                       traits=rows_in_region(ocr,(520,285,975,690)))
+                                       traits=rows_in_region(ocr,(520,285,975,690)),
+                                       character_source_sha256=shot['frame_sha256'],
+                                       character_observed_at_ns=shot['capture_started_at_ns'])
                         # The observed ON switch is white on the right. Do not silently run normal mode.
                         switch=pixels[(320*w+1640)*4:(320*w+1640)*4+3]
                         if min(switch)<180: raise OSError('Endless option not confirmed enabled')
@@ -160,19 +214,52 @@ def prepare_next(executable: Path, *, root: Path, character_slot: int, weapon: s
                             continue
                         raise OSError('Weapon page character mismatch')
                     character_mismatch_observations=0
+                    if weapon_move is not None:
+                        previous_name, posted_at = weapon_move
+                        if name == previous_name:
+                            # Arrows are asynchronous too. Never call a stale card a cycle.
+                            if time.perf_counter_ns()-posted_at < 1_000_000_000:
+                                continue
+                            # Some characters have one available starting weapon.
+                            # Select the observed card only, with incomplete coverage explicit.
+                            if len(weapon_names)==1 and preferred_weapon is None:
+                                preferred_weapon=name
+                                context['weapon_scan_complete']=False
+                                context['weapon_scan_reason']='only_one_observed_after_navigation_wait'
+                            else:
+                                raise OSError('Weapon navigation did not change observed selection')
+                        weapon_move=None
                     repeated = bool(name and name in weapon_names)
                     if name and name not in weapon_names: weapon_names.append(name)
+                    from .character_context import affinity
+                    if name:
+                        weapon_profiles[name]={'text':rows_in_region(ocr,(1200,180,1880,690)),
+                                               'frame_ref':str(source),'frame_sha256':shot['frame_sha256']}
                     wanted=weapon.casefold().replace(' ','')
                     rotating = weapon.startswith('@rotate:')
                     rotation_match = rotating and len(weapon_names) > int(weapon.split(':', 1)[1])
-                    if name and (rotation_match or (not rotating and wanted in name.casefold().replace(' ',''))
-                                 or repeated or len(weapon_names)>=12):
+                    if rotating and context.get('traits'):
+                        cycle_complete = repeated and len(weapon_names)>1 and name==weapon_names[0]
+                        if preferred_weapon is None and (cycle_complete or len(weapon_names)>=12):
+                            offset=int(weapon.split(':',1)[1]) % len(weapon_names)
+                            order=weapon_names[offset:]+weapon_names[:offset]
+                            preferred_weapon=max(order,key=lambda n:affinity(context['traits'],' '.join(weapon_profiles[n]['text'])))
+                            context['weapon_character_affinity']={n:affinity(context['traits'],' '.join(p['text'])) for n,p in weapon_profiles.items()}
+                            context['weapon_choice_semantics']='display_trait_affinity_hint_not_optimal_build'
+                            context['weapon_scan_complete']=cycle_complete
+                        choose_weapon = name and preferred_weapon == name
+                    else:
+                        choose_weapon = name and (rotation_match or (not rotating and wanted in name.casefold().replace(' ',''))
+                                 or repeated or len(weapon_names)>=12)
+                    if choose_weapon:
                         context.update(weapons=[name],weapon_source=str(source),concept=concept or name+'-build',
                                        requested_weapon=weapon, observed_weapon_names=list(weapon_names),
                                        weapon_rotation_match=rotation_match if rotating else None)
                         key='enter'
                     else:
-                        key='right'
+                        key=('left' if preferred_weapon in weapon_names and name in weapon_names
+                             and weapon_names.index(preferred_weapon)<weapon_names.index(name) else 'right')
+                        weapon_move=(name,time.perf_counter_ns())
                 else:
                     raise OSError('Unrecognized setup screen')
                 if recording and key=='enter': recording.event('menu_choice','다음 판의 캐릭터·무기 조건을 선택합니다.',context=dict(context))

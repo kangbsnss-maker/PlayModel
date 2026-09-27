@@ -3,6 +3,19 @@ import hashlib
 from .records import canonical
 
 
+def validate_character_provenance_migration(bundle, current_sources):
+    old = bundle.get('report', {}).get('graph_sources', {})
+    fingerprint = hashlib.sha256(canonical(old).encode()).hexdigest()
+    if (fingerprint != 'ce5add78e12e558691a18b2ca7d4700dd46cdf87125612201ab526cafe908e80'
+            or bundle.get('graph_hash') != fingerprint
+            or bundle.get('report', {}).get('graph_hash') != fingerprint
+            or set(old) != set(current_sources)
+            or any(old[k] != v for k,v in current_sources.items() if k != 'laya/worker.py')):
+        raise ValueError('Unsupported character provenance checkpoint migration')
+    return {'migration':'character_source_provenance_v1','old_graph_hash':fingerprint,
+            'weights_preserved':True,'behavior_version_changes':True}
+
+
 def validate_object_branch_migration(bundle):
     sources = bundle.get('report', {}).get('graph_sources', {})
     fingerprint = hashlib.sha256(canonical(sources).encode()).hexdigest()
